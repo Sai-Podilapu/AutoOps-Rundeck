@@ -1,0 +1,135 @@
+# ============================================================================
+# CI — runs on every PR and every push to main.
+#
+# Nothing here touches AWS or pushes an image. This job only answers "does the
+# code compile and do the tests pass", so it needs no cloud credentials at all
+# and is safe to run on pull requests from any branch.
+#
+# Deployment lives in cd.yml, which runs only after this succeeds on main.
+# ============================================================================
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A second push to the same branch cancels the first — no point paying for CI
+# on a commit that has already been superseded.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Each backend service is its own independent Maven project — there is no
+  # aggregator pom at backend/, so they build in parallel rather than as one
+  # reactor. The matrix mirrors the service list in docker-compose.yml.
+  # --------------------------------------------------------------------------
+  backend:
+    name: backend / ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      # One service failing should not hide the results of the other eight.
+      fail-fast: false
+      matrix:
+        service:
+          - agent-service
+          - api-gateway
+          - auth-service
+          - core-service
+          - job-service
+          - plugin-service
+          - subscription-service
+          - voice-agent
+          - workflow-service
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          # Keyed on every pom.xml so a dependency bump in one service does not
+          # invalidate the cache for the other eight.
+          cache: maven
+
+      - name: Build and test
+        working-directory: backend/${{ matrix.service }}
+        # -B batch mode (no ANSI progress spam in the log)
+        # -ntp suppresses the "Downloading..." wall of transfer output
+        # verify runs compile + unit tests + any integration-test bindings
+        run: mvn -B -ntp verify
+
+      # Surfaces failures as an annotated table on the PR instead of making you
+      # dig through raw log output to find which assertion broke.
+      - name: Publish test report
+        uses: mikepenz/action-junit-report@v5
+        # Runs even when the build failed — that is exactly when the report matters.
+        if: always()
+        with:
+          report_paths: backend/${{ matrix.service }}/target/surefire-reports/TEST-*.xml
+          check_name: tests / ${{ matrix.service }}
+          # The build step already failed the job; do not fail it a second time.
+          fail_on_failure: false
+
+  # --------------------------------------------------------------------------
+  # Frontend: lint, unit tests, then a real production build. The build step is
+  # not redundant with the tests — Vite resolves imports and tree-shakes only at
+  # build time, so a broken import can pass vitest and still fail `vite build`.
+  # --------------------------------------------------------------------------
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        # `ci` not `install` — installs exactly the lockfile and fails if
+        # package.json and package-lock.json have drifted apart.
+        run: npm ci
+
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Unit tests
+        working-directory: frontend
+        run: npm run test
+
+      - name: Production build
+        working-directory: frontend
+        run: npm run build
+
+  # --------------------------------------------------------------------------
+  # Secret scanning. The repo is private, but a leaked key is just as live
+  # whether or not the repo is public — an accidental `git add .env` is exactly
+  # the failure this catches, and .env holds CLOUD_CRED_KEY, which cannot be
+  # rotated without making every stored customer integration undecryptable.
+  # --------------------------------------------------------------------------
+  secret-scan:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks diffs commit ranges, so it needs real history, not the
+          # default depth-1 shallow clone.
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

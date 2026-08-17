@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autoops.intertecsys.com/schema/agent.schema.json",
+  "title": "Provider-authored agent definition",
+  "description": "Validation contract for every file under agents/<DOMAIN>/. Keys marked catalog are copied into library_items.definition on publish; the rest is authoring metadata.",
+  "type": "object",
+  "required": [
+    "taskId",
+    "domain",
+    "name",
+    "description",
+    "scope",
+    "priority",
+    "riskLevel",
+    "approvalRequired",
+    "runtime",
+    "instructions",
+    "tools"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "taskId": {
+      "type": "string",
+      "pattern": "^RD-[0-9]{3}$",
+      "description": "Project tracker id this agent implements."
+    },
+    "domain": {
+      "type": "string",
+      "enum": [
+        "AWS",
+        "Azure",
+        "Active Directory",
+        "Exchange On-Premises",
+        "Linux",
+        "Microsoft 365",
+        "Network",
+        "SQL Server",
+        "Security",
+        "VMware",
+        "Windows Server"
+      ]
+    },
+    "subCategory": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128
+    },
+    "description": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 512
+    },
+    "model": {
+      "type": "string",
+      "description": "Model id. Omit to inherit the tenant's default provider."
+    },
+    "scope": {
+      "type": "string",
+      "enum": [
+        "NOC",
+        "SOC",
+        "Both"
+      ]
+    },
+    "priority": {
+      "type": "string",
+      "enum": [
+        "Critical",
+        "High",
+        "Medium",
+        "Low"
+      ]
+    },
+    "complexity": {
+      "type": "string",
+      "enum": [
+        "Low",
+        "Medium",
+        "High"
+      ]
+    },
+    "riskLevel": {
+      "type": "string",
+      "enum": [
+        "Low",
+        "Medium",
+        "High"
+      ],
+      "description": "Blast radius if this agent acts wrongly, not how hard it was to build."
+    },
+    "automationType": {
+      "type": "string",
+      "enum": [
+        "Read / Report",
+        "Change / Write",
+        "Destructive / High-Impact"
+      ]
+    },
+    "approvalRequired": {
+      "type": "boolean",
+      "description": "True for anything that changes state. Drives the approval gate in core-service."
+    },
+    "runtime": {
+      "type": "string",
+      "enum": [
+        "shell",
+        "ssh",
+        "powershell",
+        "python",
+        "rest",
+        "terraform",
+        "kubernetes"
+      ],
+      "description": "Runner the underlying automation needs. 'powershell' is currently blocked: job-service has no PowerShell runner or WinRM transport."
+    },
+    "blockedBy": {
+      "type": "string",
+      "description": "Present when this agent cannot run yet. Omit once runnable."
+    },
+    "sourceScript": {
+      "type": "string",
+      "description": "Relative path under Scripts/ whose param() block is the input contract. Null when greenfield."
+    },
+    "instructions": {
+      "type": "string",
+      "minLength": 50,
+      "description": "The persona. PROVIDER-only: never serialised to a tenant caller."
+    },
+    "tools": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Closed allow-list. Referenced by stable ref, never numeric id.",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "ref"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "JOB",
+              "WORKFLOW"
+            ]
+          },
+          "ref": {
+            "type": "string",
+            "pattern": "^RD-[0-9]{3}-[a-z0-9-]+$",
+            "description": "Stable key resolved to the tenant's delivered copy at rollout."
+          }
+        }
+      }
+    },
+    "guardrails": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Operational limits the persona must honour. Carried from the feasibility workbook where one exists."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "runtime": {
+            "const": "powershell"
+          }
+        },
+        "required": [
+          "runtime"
+        ]
+      },
+      "then": {
+        "required": [
+          "blockedBy"
+        ],
+        "description": "PowerShell agents must declare why they cannot run yet."
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "approvalRequired": {
+            "const": true
+          }
+        },
+        "required": [
+          "approvalRequired"
+        ]
+      },
+      "then": {
+        "properties": {
+          "automationType": {
+            "enum": [
+              "Change / Write",
+              "Destructive / High-Impact"
+            ]
+          }
+        },
+        "description": "Approval gates belong on state-changing agents; a read-only agent asking for approval is a mis-tagged definition."
+      }
+    }
+  ]
+}

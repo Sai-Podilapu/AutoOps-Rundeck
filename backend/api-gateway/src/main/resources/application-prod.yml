@@ -1,0 +1,6 @@
+# Prod profile: all targets come from the environment. ProdSafetyGuard refuses
+# startup if dev defaults leak into prod (localhost JWKS/routes/CORS origins,
+# dev profile active).
+logging:
+  level:
+    com.intertec.autoops.gateway: INFO

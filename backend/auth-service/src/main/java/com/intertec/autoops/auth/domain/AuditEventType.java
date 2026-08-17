@@ -1,0 +1,28 @@
+package com.intertec.autoops.auth.domain;
+
+/** Mirrors the MySQL ENUM on auth_audit_log.event_type. */
+public enum AuditEventType {
+    OTP_REQUESTED,
+    OTP_SENT,
+    OTP_DELIVERY_FAILED,
+    LOGIN_SUCCESS,
+    LOGIN_FAILURE,
+    OTP_LOCKOUT,
+    TOKEN_REFRESH,
+    REFRESH_REUSE,
+    LOGOUT,
+    LOGOUT_ALL,
+    SSO_LOGIN,
+    USER_ONBOARDED,
+    USER_OFFBOARDED,
+    RATE_LIMITED,
+    EMAIL_VERIFIED,
+    PASSWORD_RESET,
+    PASSWORD_CHANGED,
+    WORKSPACE_RENAMED,
+    ROLE_CHANGED,
+    IDP_CONFIGURED,
+    PROFILE_UPDATED,
+    API_KEY_CREATED,
+    API_KEY_REVOKED
+}

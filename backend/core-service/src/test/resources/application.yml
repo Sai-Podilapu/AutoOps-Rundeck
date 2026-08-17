@@ -1,0 +1,14 @@
+# Hermetic test profile: in-memory H2 (MySQL mode), schema from the JPA
+# entities (create-drop), Flyway off (migrations are MySQL-specific).
+spring:
+  datasource:
+    url: jdbc:h2:mem:coretest;MODE=MySQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    open-in-view: false
+  flyway:
+    enabled: false

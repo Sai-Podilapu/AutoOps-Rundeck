@@ -1,0 +1,57 @@
+server:
+  port: ${SERVER_PORT:8087}
+
+spring:
+  application:
+    name: agent-service
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:autoops_agent}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+    username: ${DB_USER:autoops}
+    password: ${DB_PASSWORD:autoops}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate.jdbc.time_zone: UTC
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+autoops:
+  agent:
+    jwks-uri: ${AUTH_JWKS_URI:http://localhost:8081/oauth2/jwks}
+    issuer: ${JWT_ISSUER:autoops-auth-service}
+    subscription:
+      base-url: ${SUBSCRIPTION_SERVICE_URL:http://localhost:8082}
+      connect-timeout: ${SUBSCRIPTION_CONNECT_TIMEOUT:2s}
+      read-timeout: ${SUBSCRIPTION_READ_TIMEOUT:3s}
+      # FAIL-CLOSED default: mutations are denied when subscription-service is down.
+      entitlement-fail-open: ${ENTITLEMENT_FAIL_OPEN:false}
+    # core-service owns projects, jobs and the audit trail; workflow-service
+    # owns workflows. An agent's tools allow-list is validated against both.
+    core:
+      base-url: ${CORE_SERVICE_URL:http://localhost:8083}
+      internal-token: ${CORE_INTERNAL_TOKEN:dev-internal-token}
+      connect-timeout: ${CORE_CONNECT_TIMEOUT:2s}
+      read-timeout: ${CORE_READ_TIMEOUT:5s}
+    workflow:
+      base-url: ${WORKFLOW_SERVICE_URL:http://localhost:8086}
+      internal-token: ${WORKFLOW_INTERNAL_TOKEN:dev-internal-token}
+      connect-timeout: ${WORKFLOW_CONNECT_TIMEOUT:2s}
+      read-timeout: ${WORKFLOW_READ_TIMEOUT:5s}
+    # Shared secret this service REQUIRES on its own /internal/** endpoints.
+    internal-token: ${AGENT_INTERNAL_TOKEN:dev-internal-token}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html

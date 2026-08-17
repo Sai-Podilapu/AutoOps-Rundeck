@@ -1,0 +1,264 @@
+package com.intertec.autoops.core.service;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.intertec.autoops.core.client.EntitlementClient;
+import com.intertec.autoops.core.domain.LibraryItem;
+import com.intertec.autoops.core.exception.CoreException;
+import com.intertec.autoops.core.repo.LibraryItemRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+
+/**
+ * Template catalog. The platform rows (tenant NULL) are authored by PROVIDER
+ * accounts; a tenant "imports" one by cloning it into its own rows.
+ *
+ * <p>Premium templates are locked behind PREMIUM_TEMPLATES, a plan feature
+ * decided by subscription-service. Writing and adapting SCRIPTS needs only a
+ * live subscription: those are the customer's own work, not something the
+ * catalog sells them.
+ */
+@Service
+public class LibraryService {
+
+    private static final Logger log = LoggerFactory.getLogger(LibraryService.class);
+
+    private final LibraryItemRepository libraryRepository;
+    private final SubscriptionGate gate;
+    private final EntitlementClient entitlementClient;
+    private final ObjectMapper objectMapper;
+
+    public LibraryService(LibraryItemRepository libraryRepository, SubscriptionGate gate,
+                          EntitlementClient entitlementClient, ObjectMapper objectMapper) {
+        this.libraryRepository = libraryRepository;
+        this.gate = gate;
+        this.entitlementClient = entitlementClient;
+        this.objectMapper = objectMapper;
+    }
+
+    /** Catalog + the tenant's own copies; locked computed from the plan. */
+    public record LibraryView(LibraryItem item, boolean managed, boolean owned, boolean locked) {
+    }
+
+    @Transactional(readOnly = true)
+    public List<LibraryView> list(String tenantId, String accessToken) {
+        boolean premiumEntitled = entitlementClient
+                .checkFeature(accessToken, "PREMIUM_TEMPLATES").entitled();
+        List<LibraryView> out = new ArrayList<>();
+        for (LibraryItem item : libraryRepository.findByTenantIdIsNullOrderByCreatedAtDesc()) {
+            out.add(new LibraryView(item, true, false,
+                    item.isPremium() && !premiumEntitled));
+        }
+        for (LibraryItem item : libraryRepository.findByTenantIdOrderByCreatedAtDesc(tenantId)) {
+            out.add(new LibraryView(item, false, true, false));
+        }
+        return out;
+    }
+
+    /** Import a catalog template into the tenant's workspace. */
+    @Transactional
+    public LibraryItem clone(String tenantId, String actor, String accessToken, Long catalogId) {
+        LibraryItem source = libraryRepository.findByIdAndTenantIdIsNull(catalogId)
+                .orElseThrow(() -> CoreException.notFound("template_not_found",
+                        "No such catalog template"));
+        // Importing a WORKFLOW or AGENT template would hand the tenant an
+        // editable copy of the provider's design — the exact thing the
+        // provider-authored model exists to prevent. Those are DELIVERED by a
+        // rollout instead (RolloutService). Scripts remain freely importable:
+        // customers are meant to own and adapt those.
+        if (source.getType() != LibraryItem.Type.SCRIPT) {
+            throw CoreException.forbidden("rollout_only",
+                    "Workflows and agents are rolled out to your workspace by your provider, "
+                            + "not imported. Ask them to enable this one for you.");
+        }
+        if (source.isPremium()) {
+            gate.requireFeature(accessToken, "PREMIUM_TEMPLATES", "premium templates");
+        } else {
+            gate.requireActive(accessToken);
+        }
+        if (libraryRepository.existsByTenantIdAndTitleIgnoreCase(tenantId, source.getTitle())) {
+            throw CoreException.conflict("template_owned",
+                    "This template is already in your workspace");
+        }
+        LibraryItem copy = new LibraryItem();
+        copy.setTenantId(tenantId);
+        copy.setTitle(source.getTitle());
+        copy.setDescription(source.getDescription());
+        copy.setType(source.getType());
+        copy.setCategory(source.getCategory());
+        copy.setPremium(source.isPremium());
+        copy.setDefinition(source.getDefinition());
+        copy.setSourceId(source.getId());
+        copy.setCreatedBy(actor);
+        LibraryItem saved = libraryRepository.save(copy);
+        source.setInstalls(source.getInstalls() + 1);
+        libraryRepository.save(source);
+        log.info("Tenant {} imported template {} ('{}')", tenantId, catalogId,
+                source.getTitle());
+        return saved;
+    }
+
+    /**
+     * Author a script of your own. Needs a LIVE SUBSCRIPTION, nothing more.
+     *
+     * <p>Formerly behind PRIVATE_TEMPLATES. That gate could not hold its line:
+     * every plan may import a catalog script and (see {@link #update}) adapt
+     * it, so a customer could reach an entirely rewritten script anyway by
+     * importing a free one first. Writing scripts is what a customer's side of
+     * this platform IS — the console's own capability matrix says so — and a
+     * feature flag that is one import away from being bypassed only produced a
+     * confusing 403 on the honest path.
+     *
+     * <p>SCRIPTS ONLY. A customer builds jobs and scripts; workflows and agents
+     * are designed by the provider and delivered — the same rule the console's
+     * {@code authorAutomation} capability states and {@link #clone} enforces on
+     * the way in. Without this check the rule held only in the browser, and a
+     * direct POST could put a tenant-owned workflow in the catalog.
+     */
+    @Transactional
+    public LibraryItem createOwn(String tenantId, String actor, String accessToken,
+                                 String title, String description, String typeCode,
+                                 String category, String definition) {
+        gate.requireActive(accessToken);
+        requireScript(parseType(typeCode));
+        return save(tenantId, actor, title, description, typeCode, category, definition, false);
+    }
+
+    /**
+     * Edit a script this workspace owns — one it authored, or the copy it
+     * imported from the catalog.
+     *
+     * <p>Editing an imported copy is the point: importing exists so a customer
+     * can ADAPT a script. The copy diverges from the provider's original and
+     * the original is never touched — {@code require} reads by
+     * (id, tenantId) together, so a platform row (tenant NULL) can never be
+     * reached from here however the id was obtained.
+     *
+     * <p>Gated on a LIVE SUBSCRIPTION only: importing a script is available to
+     * every paying plan, and a script you may take but may not change is not
+     * one you own.
+     */
+    @Transactional
+    public LibraryItem update(String tenantId, String accessToken, Long id, String title,
+                              String description, String category, String definition) {
+        gate.requireActive(accessToken);
+        LibraryItem item = libraryRepository.findByIdAndTenantId(id, tenantId)
+                .orElseThrow(() -> CoreException.notFound("template_not_found",
+                        "No such script in your workspace"));
+        requireScript(item.getType());
+        return apply(item, title, description, category, definition,
+                t -> libraryRepository.existsByTenantIdAndTitleIgnoreCase(tenantId, t));
+    }
+
+    /** PROVIDER path: edit a PLATFORM catalog item (tenant NULL). */
+    @Transactional
+    public LibraryItem updatePlatform(Long id, String title, String description,
+                                      String category, String definition, Boolean premium) {
+        LibraryItem item = libraryRepository.findByIdAndTenantIdIsNull(id)
+                .orElseThrow(() -> CoreException.notFound("template_not_found",
+                        "No such catalog item"));
+        if (premium != null) {
+            item.setPremium(premium);
+        }
+        // No title-clash check: the platform catalog has never enforced unique
+        // titles, and inventing that rule here would reject edits to rows that
+        // already exist.
+        return apply(item, title, description, category, definition, t -> false);
+    }
+
+    /**
+     * The shared edit. Every field is optional — a blank one keeps what is
+     * stored, so a caller that only renames does not have to resend the whole
+     * script body.
+     */
+    private LibraryItem apply(LibraryItem item, String title, String description,
+                              String category, String definition,
+                              java.util.function.Predicate<String> titleTaken) {
+        if (title != null && !title.isBlank() && !title.equals(item.getTitle())) {
+            if (titleTaken.test(title.trim())) {
+                throw CoreException.conflict("template_owned",
+                        "A template with this title already exists in your workspace");
+            }
+            item.setTitle(title.trim());
+        }
+        if (description != null) {
+            item.setDescription(description);
+        }
+        if (category != null && !category.isBlank()) {
+            item.setCategory(category.trim());
+        }
+        if (definition != null && !definition.isBlank()) {
+            validateDefinition(definition);
+            item.setDefinition(definition);
+        }
+        return libraryRepository.save(item);
+    }
+
+    private static void requireScript(LibraryItem.Type type) {
+        if (type != LibraryItem.Type.SCRIPT) {
+            throw CoreException.forbidden("script_only",
+                    "Workflows and agents are designed by your provider and delivered to "
+                            + "your workspace. You can author and edit scripts.");
+        }
+    }
+
+    /** PROVIDER path: author a PLATFORM catalog template (tenant NULL). */
+    @Transactional
+    public LibraryItem createPlatform(String actor, String title, String description,
+                                      String typeCode, String category, String definition,
+                                      boolean premium) {
+        return save(null, actor, title, description, typeCode, category, definition, premium);
+    }
+
+    private LibraryItem save(String tenantId, String actor, String title, String description,
+                             String typeCode, String category, String definition,
+                             boolean premium) {
+        validateDefinition(definition);
+        if (tenantId != null
+                && libraryRepository.existsByTenantIdAndTitleIgnoreCase(tenantId, title)) {
+            throw CoreException.conflict("template_owned",
+                    "A template with this title already exists in your workspace");
+        }
+        LibraryItem item = new LibraryItem();
+        item.setTenantId(tenantId);
+        item.setTitle(title);
+        item.setDescription(description);
+        item.setType(parseType(typeCode));
+        item.setCategory(category == null || category.isBlank() ? "General" : category.trim());
+        item.setPremium(premium);
+        item.setDefinition(definition);
+        item.setCreatedBy(actor);
+        return libraryRepository.save(item);
+    }
+
+    /** The definition must be a runnable {steps:[...]} or {nodes:[...]} object. */
+    private void validateDefinition(String definition) {
+        try {
+            JsonNode node = objectMapper.readTree(definition);
+            if (!node.isObject() || (!node.path("steps").isArray() && !node.path("nodes").isArray())) {
+                throw new IllegalArgumentException();
+            }
+        } catch (Exception ex) {
+            throw CoreException.badRequest("invalid_definition",
+                    "Template definition must be JSON with a steps[] or nodes[] array");
+        }
+    }
+
+    private static LibraryItem.Type parseType(String code) {
+        if (code == null || code.isBlank()) {
+            return LibraryItem.Type.SCRIPT;
+        }
+        try {
+            return LibraryItem.Type.valueOf(code.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ex) {
+            throw CoreException.badRequest("unknown_template_type",
+                    "Template type must be script, workflow, or agent");
+        }
+    }
+}

@@ -1,0 +1,22 @@
+# Dev profile: auto-generated RSA key pair, relaxed logging, dev token endpoint enabled.
+logging:
+  level:
+    com.intertec.autoops.auth: DEBUG
+    org.springframework.security: INFO
+
+autoops:
+  auth:
+    # Empty keystore path -> JwkConfig auto-generates an RSA-2048 key pair at boot.
+    keystore-path: ""
+    gateway-client:
+      client-id: gateway
+      client-secret: gateway-secret
+    keycloak:
+      # Local SPA page that completes SSO (tokens arrive in the URL fragment).
+      success-redirect: http://localhost:5173/auth/callback
+    # Allow the Vite dev server to call the API directly (the proxy makes this
+    # same-origin anyway, but this covers non-proxied local calls too).
+    cors:
+      allowed-origins:
+        - http://localhost:5173
+        - http://localhost:3000

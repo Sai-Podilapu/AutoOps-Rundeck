@@ -1,0 +1,58 @@
+server:
+  port: ${SERVER_PORT:8086}
+
+spring:
+  application:
+    name: workflow-service
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:autoops_workflow}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+    username: ${DB_USER:autoops}
+    password: ${DB_PASSWORD:autoops}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate.jdbc.time_zone: UTC
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+autoops:
+  workflow:
+    jwks-uri: ${AUTH_JWKS_URI:http://localhost:8081/oauth2/jwks}
+    issuer: ${JWT_ISSUER:autoops-auth-service}
+    subscription:
+      base-url: ${SUBSCRIPTION_SERVICE_URL:http://localhost:8082}
+      connect-timeout: ${SUBSCRIPTION_CONNECT_TIMEOUT:2s}
+      read-timeout: ${SUBSCRIPTION_READ_TIMEOUT:3s}
+      # FAIL-CLOSED default: mutations are denied when subscription-service is down.
+      entitlement-fail-open: ${ENTITLEMENT_FAIL_OPEN:false}
+    # core-service owns projects, runs, approval settings and the audit trail;
+    # this service reads them over the shared-secret /internal API.
+    core:
+      base-url: ${CORE_SERVICE_URL:http://localhost:8083}
+      internal-token: ${CORE_INTERNAL_TOKEN:dev-internal-token}
+      connect-timeout: ${CORE_CONNECT_TIMEOUT:2s}
+      read-timeout: ${CORE_READ_TIMEOUT:5s}
+    # agent-service holds the other half of the shared MAX_AUTOMATIONS budget.
+    agent:
+      base-url: ${AGENT_SERVICE_URL:http://localhost:8087}
+      internal-token: ${AGENT_INTERNAL_TOKEN:dev-internal-token}
+      connect-timeout: ${AGENT_CONNECT_TIMEOUT:2s}
+      read-timeout: ${AGENT_READ_TIMEOUT:3s}
+    # Shared secret this service REQUIRES on its own /internal/** endpoints.
+    internal-token: ${WORKFLOW_INTERNAL_TOKEN:dev-internal-token}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html

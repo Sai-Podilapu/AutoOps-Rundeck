@@ -1,0 +1,26 @@
+# Prod profile: TLS to MySQL is mandatory and Swagger is off. The existing
+# ProdSafetyGuard already refuses startup on a dev PLUGIN_CRED_KEY or
+# PLUGIN_INTERNAL_TOKEN; this file is what makes the DB connection itself safe.
+#
+# The base application.yml carries useSSL=false for local Docker MySQL. This
+# database holds every tenant's encrypted webhook URLs, API tokens and SMTP
+# passwords, so the RDS connection is overridden to sslMode=REQUIRED. The rows
+# are encrypted at rest with PLUGIN_CRED_KEY, but that key is applied by this
+# service — the plaintext still travels the wire on read.
+#
+# Swagger matters more here than elsewhere: application.yml pins
+# springdoc.swagger-ui.path, so without this override the notification-channel
+# API would be browsable at a predictable URL in production.
+logging:
+  level:
+    com.intertec.autoops.plugin: INFO
+
+spring:
+  datasource:
+    url: jdbc:mysql://${DB_HOST}:${DB_PORT:3306}/${DB_NAME:autoops_plugin}?sslMode=REQUIRED&serverTimezone=UTC
+
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false

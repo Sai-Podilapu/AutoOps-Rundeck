@@ -1,0 +1,356 @@
+# ============================================================
+# AutoOps — the whole platform as one Docker Compose project.
+#
+#   docker compose up -d --build      # build + start everything
+#   docker compose logs -f auth-service   # watch OTP codes (dev profile logs them)
+#   docker compose down               # stop (add -v to also wipe the database)
+#
+# Containers: mysql + redis (internal), auth-service :8081,
+# subscription-service :8082, core-service :8083, voice-agent :8085,
+# api-gateway :8080,
+# frontend :5173 (nginx serving the SPA, /api proxied to the gateway).
+# Open http://localhost:5173 — the browser only talks to the frontend origin.
+#
+# This stack is self-contained: its MySQL publishes host port 3308 (debug
+# access only) so it never clashes with the auth-service/docker-compose.yml
+# dev infra on 3307. SSO/Keycloak is not wired here — password + OTP login
+# works; SSO buttons need the separate dev keycloak.
+# ============================================================
+name: autoops
+
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: autoops_auth
+      MYSQL_USER: autoops
+      MYSQL_PASSWORD: autoops
+    ports:
+      # Debug access from the host only; services use mysql:3306 internally.
+      - "3308:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # First-init only: creates autoops_subscription + autoops_core (+ grants).
+      - ./backend/auth-service/mysql-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    # Internal only — no host port, so the dev redis on 6379 never clashes.
+
+  auth-service:
+    build: ./backend/auth-service
+    environment:
+      # dev profile: auto-generated JWT keys; OTP codes are ALSO logged to the
+      # console (fallback when SendGrid isn't configured).
+      SPRING_PROFILES_ACTIVE: dev
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      REDIS_HOST: redis
+      # Entitlement checks (/authorize, enterprise-SSO config gating).
+      SUBSCRIPTION_SERVICE_URL: http://subscription-service:8082
+      # Real email: put SENDGRID_API_KEY + SENDGRID_FROM_EMAIL in ./.env
+      # (see .env.example). Without a template id, plain-text emails are sent.
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-REPLACE_ME}
+      SENDGRID_FROM_EMAIL: ${SENDGRID_FROM_EMAIL:-no-reply@autoops.io}
+      SENDGRID_OTP_TEMPLATE_ID: ${SENDGRID_OTP_TEMPLATE_ID:-REPLACE_ME}
+      # Social login (Google/Microsoft) — put credentials in ./.env; a blank
+      # client-id leaves that provider disabled (503 sso_not_configured).
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      MS_CLIENT_ID: ${MS_CLIENT_ID:-}
+      MS_CLIENT_SECRET: ${MS_CLIENT_SECRET:-}
+    ports:
+      - "8081:8081"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8081/actuator/health"]
+      interval: 10s
+      retries: 12
+      start_period: 30s
+
+  subscription-service:
+    build: ./backend/subscription-service
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      REDIS_HOST: redis
+      AUTH_JWKS_URI: http://auth-service:8081/oauth2/jwks
+      # PAYMENT_STUB_FAILS=true docker compose up -d subscription-service
+      # makes every charge decline (exercises PAST_DUE + /api/payments/retry).
+      PAYMENT_STUB_FAILS: ${PAYMENT_STUB_FAILS:-false}
+      # Shared secret for /internal/** (core-service scheduler checks).
+      SUBSCRIPTION_INTERNAL_TOKEN: ${SUBSCRIPTION_INTERNAL_TOKEN:-dev-internal-token}
+    ports:
+      - "8082:8082"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8082/actuator/health"]
+      interval: 10s
+      retries: 12
+      start_period: 30s
+
+  # Step execution runtime (Rundeck-style): actually runs job/workflow steps
+  # — shell commands, scripts, python, ssh, REST, terraform (OpenTofu),
+  # kubectl, AWS Lambda and Azure Function invokes — and verifies stored cloud
+  # credentials against the real providers (/internal/verify). INTERNAL ONLY:
+  # no host port, not routed by the gateway; core-service authenticates with
+  # the shared internal token. ssh steps need a key volume mounted at
+  # /home/autoops/.ssh, which this stack does not provide yet.
+  job-service:
+    build: ./backend/job-service
+    # A timed-out step's grandchildren are reparented to PID 1. The JVM does
+    # not reap processes it never spawned, so without an init they pile up as
+    # zombies until the container runs out of PIDs. docker-init reaps them.
+    init: true
+    environment:
+      JOB_INTERNAL_TOKEN: ${JOB_INTERNAL_TOKEN:-dev-internal-token}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8084/actuator/health"]
+      interval: 10s
+      retries: 12
+      start_period: 20s
+
+  core-service:
+    build: ./backend/core-service
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      AUTH_JWKS_URI: http://auth-service:8081/oauth2/jwks
+      SUBSCRIPTION_SERVICE_URL: http://subscription-service:8082
+      # Real step execution via job-service (simulated when unset).
+      EXECUTION_MODE: remote
+      JOB_SERVICE_URL: http://job-service:8084
+      JOB_INTERNAL_TOKEN: ${JOB_INTERNAL_TOKEN:-dev-internal-token}
+      SUBSCRIPTION_INTERNAL_TOKEN: ${SUBSCRIPTION_INTERNAL_TOKEN:-dev-internal-token}
+      # Cloud credential encryption at rest (set a strong secret in ./.env).
+      CLOUD_CRED_KEY: ${CLOUD_CRED_KEY:-dev-cloud-cred-key}
+      # Workflow definitions live in workflow-service now; the run engine,
+      # approvals, governance, SCM sync and compliance all read them from there.
+      WORKFLOW_SERVICE_URL: http://workflow-service:8086
+      WORKFLOW_INTERNAL_TOKEN: ${WORKFLOW_INTERNAL_TOKEN:-dev-internal-token}
+      # Agents are BUILT by the provider here and rolled out to tenants, so
+      # this service writes into agent-service. Deliberately NOT a depends_on:
+      # agent-service already depends on this one for tool targets, and the
+      # rollout call only happens on demand — a startup edge would deadlock.
+      AGENT_SERVICE_URL: http://agent-service:8087
+      # Probe-only, for the provider Platform Health page. Also NOT a
+      # depends_on: api-gateway already waits on this service, so requiring it
+      # back would deadlock startup — the probe reports DOWN until it is up.
+      VOICE_SERVICE_URL: http://voice-agent:8085
+      GATEWAY_URL: http://api-gateway:8080
+      AGENT_INTERNAL_TOKEN: ${AGENT_INTERNAL_TOKEN:-dev-internal-token}
+      # Outbound notifications. Also NOT a depends_on: delivery is
+      # best-effort, so a plugin-service that is down must slow nothing and
+      # fail no run — the emitter logs and moves on.
+      PLUGIN_SERVICE_URL: http://plugin-service:8088
+      PLUGIN_INTERNAL_TOKEN: ${PLUGIN_INTERNAL_TOKEN:-dev-internal-token}
+      CONSOLE_BASE_URL: ${CONSOLE_BASE_URL:-http://localhost:5173}
+      # Dify is the workflow engine. Set both in ./.env — until then the
+      # bridge answers 503 and the designer says Dify is not connected.
+      DIFY_BASE_URL: ${DIFY_BASE_URL:-}
+      DIFY_API_KEY: ${DIFY_API_KEY:-}
+      # Service API keys, one per published workflow: slug=app-…,slug2=app-…
+      # A single variable on purpose — the per-workflow DIFY_WF_<SLUG> form
+      # core-service also accepts would need an edit here for every workflow
+      # added, which is exactly the friction that stops workflows shipping.
+      DIFY_WORKFLOW_KEYS: ${DIFY_WORKFLOW_KEYS:-}
+      # Shared secret workflow-service and agent-service must present on
+      # this service's own /internal/** endpoints.
+      CORE_INTERNAL_TOKEN: ${CORE_INTERNAL_TOKEN:-dev-internal-token}
+    ports:
+      - "8083:8083"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+      subscription-service:
+        condition: service_healthy
+      job-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8083/actuator/health"]
+      interval: 10s
+      retries: 12
+      start_period: 30s
+
+  # Automation workflow DEFINITIONS (autoops_workflow). Split out of
+  # core-service: it owns the canvas and its plan limits, while runs,
+  # approvals and audit stay in core-service and are reached over
+  # /internal. Deliberately NOT started with depends_on: core-service
+  # ready — the two call each other, so a hard ordering would deadlock;
+  # each degrades gracefully while the other comes up.
+  workflow-service:
+    build: ./backend/workflow-service
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_NAME: autoops_workflow
+      AUTH_JWKS_URI: http://auth-service:8081/oauth2/jwks
+      SUBSCRIPTION_SERVICE_URL: http://subscription-service:8082
+      CORE_SERVICE_URL: http://core-service:8083
+      CORE_INTERNAL_TOKEN: ${CORE_INTERNAL_TOKEN:-dev-internal-token}
+      AGENT_SERVICE_URL: http://agent-service:8087
+      AGENT_INTERNAL_TOKEN: ${AGENT_INTERNAL_TOKEN:-dev-internal-token}
+      WORKFLOW_INTERNAL_TOKEN: ${WORKFLOW_INTERNAL_TOKEN:-dev-internal-token}
+    ports:
+      - "8086:8086"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+      subscription-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8086/actuator/health"]
+      interval: 10s
+      retries: 12
+      start_period: 30s
+
+  # AI agents (autoops_agent). An agent's tools allow-list is validated
+  # against core-service (jobs) and workflow-service (workflows) on every
+  # write, and its audit events are posted back to core-service.
+  agent-service:
+    build: ./backend/agent-service
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_NAME: autoops_agent
+      AUTH_JWKS_URI: http://auth-service:8081/oauth2/jwks
+      SUBSCRIPTION_SERVICE_URL: http://subscription-service:8082
+      CORE_SERVICE_URL: http://core-service:8083
+      CORE_INTERNAL_TOKEN: ${CORE_INTERNAL_TOKEN:-dev-internal-token}
+      WORKFLOW_SERVICE_URL: http://workflow-service:8086
+      WORKFLOW_INTERNAL_TOKEN: ${WORKFLOW_INTERNAL_TOKEN:-dev-internal-token}
+      AGENT_INTERNAL_TOKEN: ${AGENT_INTERNAL_TOKEN:-dev-internal-token}
+    ports:
+      - "8087:8087"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+      subscription-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8087/actuator/health"]
+      interval: 10s
+      retries: 12
+      start_period: 30s
+
+  # Notification channels (autoops_plugin). Owns the Slack/Teams/Outlook/
+  # Gmail/GitHub/webhook plugins, each tenant's encrypted credentials for
+  # them, and the rules binding job and workflow lifecycle events to
+  # channels. core-service posts events to /internal/events; delivery then
+  # happens on this service's own worker pool, so a slow third party can
+  # never hold up a run. Deliberately NOT a depends_on of core-service:
+  # notification delivery is best-effort and must not gate the run engine.
+  plugin-service:
+    build: ./backend/plugin-service
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_NAME: autoops_plugin
+      AUTH_JWKS_URI: http://auth-service:8081/oauth2/jwks
+      # Encryption at rest for webhook URLs, API tokens and SMTP passwords.
+      # Separate from CLOUD_CRED_KEY on purpose — one leaked key must not
+      # open both vaults. Set a strong value in ./.env.
+      PLUGIN_CRED_KEY: ${PLUGIN_CRED_KEY:-dev-plugin-cred-key}
+      # Shared secret core-service must present on /internal/**.
+      PLUGIN_INTERNAL_TOKEN: ${PLUGIN_INTERNAL_TOKEN:-dev-internal-token}
+      # Used to build the "Open in AutoOps" deep link inside a notification.
+      CONSOLE_BASE_URL: ${CONSOLE_BASE_URL:-http://localhost:5173}
+    ports:
+      - "8088:8088"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8088/actuator/health"]
+      interval: 10s
+      retries: 12
+      start_period: 30s
+
+  # Aegis-01, the landing-page voice agent. Holds the ElevenLabs API key and
+  # hands the browser nothing but a 15-minute signed WebSocket URL. Its two
+  # endpoints are anonymous (visitors have no account), so it rate-limits them
+  # itself — that cap is what protects the ElevenLabs credits. Without
+  # ELEVENLABS_API_KEY + ELEVENLABS_AGENT_ID in ./.env it reports itself
+  # disabled and the landing page simply omits the talk button.
+  voice-agent:
+    build: ./backend/voice-agent
+    environment:
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-REPLACE_ME}
+      ELEVENLABS_AGENT_ID: ${ELEVENLABS_AGENT_ID:-REPLACE_ME}
+      VOICE_AGENT_NAME: ${VOICE_AGENT_NAME:-Aegis-01}
+    ports:
+      - "8085:8085"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8085/actuator/health"]
+      interval: 10s
+      retries: 12
+      start_period: 20s
+
+  api-gateway:
+    build: ./backend/api-gateway
+    environment:
+      AUTH_SERVICE_URL: http://auth-service:8081
+      SUBSCRIPTION_SERVICE_URL: http://subscription-service:8082
+      CORE_SERVICE_URL: http://core-service:8083
+      WORKFLOW_SERVICE_URL: http://workflow-service:8086
+      AGENT_SERVICE_URL: http://agent-service:8087
+      PLUGIN_SERVICE_URL: http://plugin-service:8088
+      VOICE_SERVICE_URL: http://voice-agent:8085
+      AUTH_JWKS_URI: http://auth-service:8081/oauth2/jwks
+      CORS_ALLOWED_ORIGINS: http://localhost:5173,http://localhost:3000
+    ports:
+      - "8080:8080"
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      subscription-service:
+        condition: service_healthy
+      core-service:
+        condition: service_healthy
+      workflow-service:
+        condition: service_healthy
+      agent-service:
+        condition: service_healthy
+      plugin-service:
+        condition: service_healthy
+      voice-agent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      retries: 12
+      start_period: 20s
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+
+volumes:
+  mysql-data:

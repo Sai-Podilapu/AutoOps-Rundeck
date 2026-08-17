@@ -1,0 +1,115 @@
+{
+  "taskId": "RD-079",
+  "domain": "Linux",
+  "title": "Linux Server Health Check",
+  "description": "Collects CPU, memory, disk, swap and load figures from one Linux host over SSH and reports what breached the supplied thresholds. Read-only.",
+  "category": "Linux",
+  "runtime": "ssh",
+  "inputs": [
+    {
+      "variable": "TargetHost",
+      "label": "Target host",
+      "type": "string",
+      "required": true,
+      "pattern": "^(?=.{1,253}$)(([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\\.)*[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?|((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))$",
+      "placeholder": "app-prod-01.customer.local",
+      "help": "Hostname or IPv4 address of the server to inspect. One host per run."
+    },
+    {
+      "variable": "SshUser",
+      "label": "SSH user",
+      "type": "string",
+      "required": true,
+      "pattern": "^[a-z_][a-z0-9_-]{0,31}$",
+      "default": "svc-autoops",
+      "help": "Service account used for the connection. Needs read access only — do not supply a root account."
+    },
+    {
+      "variable": "DiskWarnPercent",
+      "label": "Disk warning threshold (%)",
+      "type": "number",
+      "required": true,
+      "min": 50,
+      "max": 99,
+      "default": 85,
+      "help": "Filesystems at or above this are reported as warnings.",
+      "consumedBy": "agent"
+    },
+    {
+      "variable": "DiskCriticalPercent",
+      "label": "Disk critical threshold (%)",
+      "type": "number",
+      "required": true,
+      "min": 51,
+      "max": 100,
+      "default": 95,
+      "help": "Must be higher than the warning threshold.",
+      "consumedBy": "agent"
+    },
+    {
+      "variable": "MemoryWarnPercent",
+      "label": "Memory warning threshold (%)",
+      "type": "number",
+      "required": true,
+      "min": 50,
+      "max": 99,
+      "default": 90,
+      "help": "Reported against used memory excluding buffers and cache.",
+      "consumedBy": "agent"
+    },
+    {
+      "variable": "IncludeSwap",
+      "label": "Include swap",
+      "type": "boolean",
+      "required": false,
+      "default": true,
+      "help": "Turn off for hosts running without swap, so an absent swap device is not reported as a fault.",
+      "consumedBy": "agent"
+    },
+    {
+      "variable": "OutputFormat",
+      "label": "Output format",
+      "type": "select",
+      "required": true,
+      "options": [
+        "Console",
+        "CSV",
+        "JSON",
+        "HTML"
+      ],
+      "default": "JSON",
+      "help": "JSON is the machine-readable form the agent reasons over most reliably.",
+      "consumedBy": "agent"
+    }
+  ],
+  "nodes": [
+    {
+      "type": "ssh",
+      "label": "Collect load, CPU and memory",
+      "value": "{{SshUser}}@{{TargetHost}} LC_ALL=C awk '{printf \"load_1m=%s load_5m=%s load_15m=%s\\n\", $1, $2, $3}' /proc/loadavg; LC_ALL=C nproc | awk '{printf \"cpu_cores=%s\\n\", $1}'; LC_ALL=C free -m | awk '/^Mem:/ {printf \"mem_total_mb=%s mem_used_mb=%s mem_used_pct=%.1f\\n\", $2, $2-$7, ($2-$7)*100/$2}'",
+      "retries": 1,
+      "continueOnError": false
+    },
+    {
+      "type": "ssh",
+      "label": "Collect filesystem usage",
+      "value": "{{SshUser}}@{{TargetHost}} LC_ALL=C df -P -x tmpfs -x devtmpfs -x squashfs | awk 'NR>1 {gsub(/%/,\"\",$5); printf \"fs=%s size=%s used_pct=%s mount=%s\\n\", $1, $2, $5, $6}'",
+      "retries": 1,
+      "continueOnError": false
+    },
+    {
+      "type": "ssh",
+      "label": "Collect swap usage",
+      "value": "{{SshUser}}@{{TargetHost}} LC_ALL=C free -m | awk '/^Swap:/ {if ($2==0) print \"swap=absent\"; else printf \"swap_total_mb=%s swap_used_mb=%s swap_used_pct=%.1f\\n\", $2, $3, $3*100/$2}'",
+      "retries": 1,
+      "continueOnError": true
+    },
+    {
+      "type": "ssh",
+      "label": "Collect uptime and kernel",
+      "value": "{{SshUser}}@{{TargetHost}} LC_ALL=C uptime -p; LC_ALL=C uname -r | awk '{printf \"kernel=%s\\n\", $1}'",
+      "retries": 0,
+      "continueOnError": true
+    }
+  ]
+}

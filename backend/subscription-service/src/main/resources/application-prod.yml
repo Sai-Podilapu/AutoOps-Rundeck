@@ -1,0 +1,14 @@
+# Prod profile: TLS to MySQL is mandatory, Swagger is off, secrets come from
+# the environment. ProdSafetyGuard refuses startup if dev defaults leak into
+# prod (default DB password, localhost JWKS, dev profile active).
+logging:
+  level:
+    com.intertec.autoops.subscription: INFO
+
+spring:
+  datasource:
+    url: jdbc:mysql://${DB_HOST}:${DB_PORT:3306}/${DB_NAME:autoops_subscription}?sslMode=REQUIRED&serverTimezone=UTC
+
+springdoc:
+  swagger-ui:
+    enabled: false

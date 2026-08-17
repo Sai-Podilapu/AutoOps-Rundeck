@@ -1,0 +1,35 @@
+server:
+  port: ${SERVER_PORT:8085}
+
+spring:
+  application:
+    name: voice-agent
+
+autoops:
+  voice:
+    # ElevenLabs credentials. The key stays here — it is never routed to the
+    # browser; the browser only ever receives a 15-minute signed URL.
+    # Dashboard -> Developers -> API Keys.
+    api-key: ${ELEVENLABS_API_KEY:REPLACE_ME}
+    # Dashboard -> Agents -> Aegis-01 -> the agent_… id.
+    agent-id: ${ELEVENLABS_AGENT_ID:REPLACE_ME}
+    agent-name: ${VOICE_AGENT_NAME:Aegis-01}
+    api-base-url: ${VOICE_API_BASE_URL:https://api.elevenlabs.io}
+    request-timeout: ${VOICE_REQUEST_TIMEOUT:10s}
+    rate-limit:
+      # /api/voice/session is anonymous and every call spends ElevenLabs
+      # credits, so these caps are the account's protection. The prod profile
+      # refuses to start with them disabled.
+      enabled: ${VOICE_RATE_LIMIT:true}
+      per-ip: ${VOICE_RATE_LIMIT_PER_IP:5}
+      global: ${VOICE_RATE_LIMIT_GLOBAL:120}
+      window: ${VOICE_RATE_LIMIT_WINDOW:10m}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized

@@ -1,0 +1,36 @@
+server:
+  port: ${SERVER_PORT:8084}
+
+spring:
+  application:
+    name: job-service
+
+autoops:
+  jobs:
+    # Shared secret core-service presents in X-Internal-Token. The prod
+    # profile refuses to start with the dev default.
+    internal-token: ${JOB_INTERNAL_TOKEN:dev-internal-token}
+    default-step-timeout: ${STEP_TIMEOUT:60s}
+    max-step-timeout: ${STEP_MAX_TIMEOUT:10m}
+    output-max-chars: ${STEP_OUTPUT_MAX_CHARS:16000}
+    # Variables a step may inherit from this service, on top of PATH/HOME/
+    # LANG/TZ/TMPDIR. Everything else is stripped so tenant code never sees
+    # JOB_INTERNAL_TOKEN. Comma-separated; NEVER put a secret here.
+    env-passthrough: ${STEP_ENV_PASSTHROUGH:}
+    sandbox:
+      # Per-step OS user. Needs root + su-exec + the autoops-stepN pool from
+      # the image; inactive elsewhere (and then steps are refused if we are
+      # root). Turning this off is a development-only choice.
+      enabled: ${STEP_SANDBOX:true}
+      user-count: ${STEP_SANDBOX_USERS:8}
+      # Also the concurrency ceiling: a step waits this long for a free slot.
+      lease-timeout: ${STEP_SLOT_WAIT:30s}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized

@@ -1,0 +1,112 @@
+server:
+  port: ${SERVER_PORT:8081}
+
+spring:
+  application:
+    name: auth-service
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:autoops_auth}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+    username: ${DB_USER:autoops}
+    password: ${DB_PASSWORD:autoops}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate.jdbc.time_zone: UTC
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER_URI:http://localhost:8180/realms/autoops}
+
+autoops:
+  auth:
+    issuer: ${JWT_ISSUER:autoops-auth-service}
+    access-token-ttl: ${ACCESS_TOKEN_TTL:15m}
+    refresh-token-ttl: ${REFRESH_TOKEN_TTL:30d}
+    token-store: ${TOKEN_STORE:jdbc}   # jdbc | redis
+    # Proxies (exact IPs or CIDRs, comma-separated) allowed to set
+    # X-Forwarded-For / X-Real-IP. Empty (default) = never trust those headers.
+    trusted-proxies: ${TRUSTED_PROXIES:}
+    tenant:
+      default-tenant: ${DEFAULT_TENANT:default}
+      # Set true behind a trusted gateway that injects a validated X-Tenant-ID;
+      # requests without the header are then rejected (400) instead of
+      # silently falling back to the default tenant.
+      require-header: ${TENANT_REQUIRE_HEADER:false}
+    keystore-path: ${JWT_KEYSTORE_PATH:}
+    keystore-password: ${JWT_KEYSTORE_PASSWORD:}
+    keystore-alias: ${JWT_KEYSTORE_ALIAS:autoops-auth}
+    otp:
+      length: 6
+      ttl: 5m
+      max-attempts: 5
+      # true  => /otp/generate 404s on an unregistered email so the visitor is
+      #          told to sign up (accepts user enumeration, rate-limit bounded)
+      # false => neutral 200 either way (anti-enumeration)
+      # Email spend is unaffected: unknown addresses never reach SendGrid.
+      reveal-unknown-account: true
+    rate-limit:
+      otp-requests: 5
+      verify-attempts: 10
+      login-attempts: 10
+      registrations: 10
+      window: 15m
+    subscription:
+      base-url: ${SUBSCRIPTION_SERVICE_URL:http://localhost:8082}
+      connect-timeout: 2s
+      read-timeout: 3s
+      entitlement-fail-open: ${ENTITLEMENT_FAIL_OPEN:false}
+    social:
+      # Providers redirect back to {redirect-base-url}/api/auth/sso/{provider}/callback
+      # — register that exact URI in Google Cloud Console / Azure Entra ID.
+      redirect-base-url: ${SSO_REDIRECT_BASE:http://localhost:8080}
+      google:
+        client-id: ${GOOGLE_CLIENT_ID:}
+        client-secret: ${GOOGLE_CLIENT_SECRET:}
+      microsoft:
+        client-id: ${MS_CLIENT_ID:}
+        client-secret: ${MS_CLIENT_SECRET:}
+    sendgrid:
+      api-key: ${SENDGRID_API_KEY:REPLACE_ME}
+      otp-template-id: ${SENDGRID_OTP_TEMPLATE_ID:REPLACE_ME}
+      from-email: ${SENDGRID_FROM_EMAIL:no-reply@autoops.io}
+      webhook-public-key: ${SENDGRID_WEBHOOK_PUBLIC_KEY:}
+    gateway-client:
+      client-id: ${GATEWAY_CLIENT_ID:gateway}
+      client-secret: ${GATEWAY_CLIENT_SECRET:gateway-secret}
+    keycloak:
+      issuer-uri: ${KEYCLOAK_ISSUER_URI:http://localhost:8180/realms/autoops}
+      client-id: ${KEYCLOAK_CLIENT_ID:autoops-auth}
+      client-secret: ${KEYCLOAK_CLIENT_SECRET:REPLACE_ME}
+      redirect-uri: ${KEYCLOAK_REDIRECT_URI:http://localhost:8081/api/auth/sso/callback}
+      # Frontend page that receives tokens in the URL fragment after SSO.
+      # Blank => the callback returns token JSON directly (API clients).
+      success-redirect: ${SSO_SUCCESS_REDIRECT:}
+    retention:
+      otp-entries: ${RETENTION_OTP:1d}
+      refresh-sessions: ${RETENTION_SESSIONS:30d}
+      audit-log: ${RETENTION_AUDIT:180d}
+    cors:
+      allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:3000}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html

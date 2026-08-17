@@ -1,0 +1,439 @@
+import React, { useEffect, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import {
+  PageHeader,
+  Card,
+  SmallButton,
+  Chip,
+} from "../../components/app/appui";
+import Icon from "../../components/Icon";
+import { api } from "../../lib/api";
+import { useStore } from "../../store/store";
+import { planAllows } from "../../lib/entitlements";
+
+const TABS = [
+  "Details",
+  "Workflow",
+];
+
+// The typed step palette from the AutoOps designer.
+const STEP_TYPES = [
+  { id: "agent", label: "Agent Command", icon: "robot", category: "AI Agent" },
+  { id: "command", label: "Command", icon: "terminal", category: "System" },
+  { id: "script", label: "Script", icon: "doc", category: "Scripting" },
+  {
+    id: "pyscript",
+    label: "Python Script",
+    icon: "doc",
+    category: "Scripting",
+  },
+  { id: "ssh", label: "SSH Command", icon: "terminal", category: "System" },
+  {
+    id: "terraform",
+    label: "Terraform",
+    icon: "cube",
+    category: "Infrastructure",
+    premium: true,
+  },
+  {
+    id: "kubernetes",
+    label: "Kubernetes",
+    icon: "k8s",
+    category: "Infrastructure",
+    premium: true,
+  },
+  {
+    id: "awslambda",
+    label: "AWS Lambda",
+    icon: "cloud",
+    category: "Serverless",
+    premium: true,
+  },
+  {
+    id: "azurefn",
+    label: "Azure Function",
+    icon: "azure",
+    category: "Serverless",
+    premium: true,
+  },
+  { id: "rest", label: "REST API", icon: "api", category: "Integration" },
+  { id: "test", label: "Test Node", icon: "bolt", category: "Testing" },
+];
+
+const inputCls =
+  "w-full rounded-lg border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-900 outline-none transition focus:border-slate-300 focus:ring-2 focus:ring-slate-300";
+
+// What to type into each step — these run for real on the job runner.
+const STEP_HINTS = {
+  command: "Shell command, e.g.  df -h && systemctl status app",
+  agent: "Command run on the job agent, e.g.  uptime",
+  script: "Multi-line shell script…",
+  pyscript: "Python code…  print('hello')",
+  ssh: "user@host command, e.g.  deploy@10.0.0.5 systemctl restart app",
+  rest: "URL or METHOD URL, e.g.  POST https://api.example.com/deploy",
+  terraform: "Terraform HCL (main.tf). Runs init + apply with your cloud integration's credentials.",
+  kubernetes: "kubectl args, e.g.  get pods -A   — or  apply  with a manifest on the next lines",
+  awslambda:
+    "Function name or ARN on line 1, JSON payload on the lines after. Signed with your AWS integration's credentials.",
+  azurefn:
+    "Function URL on line 1 (optionally METHOD URL), JSON body after. Uses functionKey from your AZURE integration if set.",
+};
+
+export default function CreateJob() {
+  const { pid, jid } = useParams();
+  const navigate = useNavigate();
+  const { workspace, pushToast } = useStore();
+  const plan = workspace?.plan;
+  const advanced = planAllows(plan, "advancedSteps");
+  const b = `/app/projects/${pid}`;
+
+  const [tab, setTab] = useState("Details");
+  const [name, setName] = useState("");
+  const [group, setGroup] = useState("");
+  const [description, setDescription] = useState("");
+  const [requiresApproval, setRequiresApproval] = useState(false);
+  const [steps, setSteps] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const fileInputRef = React.useRef(null);
+  const isEdit = !!jid;
+
+  useEffect(() => {
+    if (isEdit) {
+      setBusy(true);
+      api.get("jobs", jid).then((job) => {
+        setName(job.name || "");
+        setGroup(job.group || "");
+        setDescription(job.description || "");
+        setRequiresApproval(!!job.requiresApproval);
+        setSteps(job.steps || []);
+      }).catch(e => {
+        pushToast(e.message || "Failed to load job", "red");
+      }).finally(() => {
+        setBusy(false);
+      });
+    }
+  }, [jid, isEdit, pushToast]);
+
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const data = JSON.parse(event.target.result);
+        if (data.name) setName(data.name);
+        if (data.group) setGroup(data.group);
+        if (data.description) setDescription(data.description);
+        if (data.steps && Array.isArray(data.steps)) setSteps(data.steps);
+        pushToast("Definition uploaded successfully", "emerald");
+      } catch (err) {
+        pushToast("Invalid JSON file", "red");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = null;
+  };
+
+  const addStep = (t) => {
+    if (t.premium && !advanced) {
+      pushToast(`${t.label} requires the Business plan`, "amber");
+      return;
+    }
+    setSteps((s) => [...s, { ...t, key: t.id + "-" + (s.length + 1) }]);
+  };
+  const removeStep = (key) => setSteps((s) => s.filter((x) => x.key !== key));
+  const updateStepValue = (key, value) => setSteps((s) => s.map((x) => (x.key === key ? { ...x, value } : x)));
+  const updateStepConnection = (key, connection) =>
+    setSteps((s) => s.map((x) => (x.key === key ? { ...x, connection } : x)));
+  const updateStepField = (key, field, val) =>
+    setSteps((s) => s.map((x) => (x.key === key ? { ...x, [field]: val } : x)));
+
+  const save = async () => {
+    if (!name.trim()) {
+      pushToast("Job name is required", "red");
+      setTab("Details");
+      return;
+    }
+    setBusy(true);
+    const payload = {
+      projectId: pid,
+      name: name.trim(),
+      group: group.trim(),
+      description: description.trim(),
+      requiresApproval,
+      steps,
+      stepCount: steps.length,
+    };
+    try {
+      if (isEdit) {
+        await api.update("jobs", jid, payload);
+        pushToast("Job updated", "emerald");
+      } else {
+        await api.create("jobs", payload);
+        pushToast("Job created", "emerald");
+      }
+      navigate(`${b}/jobs`);
+    } catch (e) {
+      pushToast(e.message || `Could not ${isEdit ? "update" : "create"} job`, "red");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="animate-fade-up">
+      <Link
+        to={`${b}/jobs`}
+        className="text-sm text-slate-500 transition hover:text-slate-900"
+      >
+        ← Jobs
+      </Link>
+      <PageHeader
+        title={isEdit ? "Edit Job" : "Create New Job"}
+        subtitle="Define a reusable, parameterized automation job"
+        actions={
+          <div className="flex items-center gap-2">
+            <input
+              type="file"
+              accept=".json"
+              className="hidden"
+              ref={fileInputRef}
+              onChange={handleFileUpload}
+            />
+            <Link to={`${b}/jobs`}>
+              <SmallButton>Cancel</SmallButton>
+            </Link>
+            <SmallButton icon="doc" onClick={() => fileInputRef.current?.click()}>
+              Upload Definition
+            </SmallButton>
+            <SmallButton
+              variant="primary"
+              onClick={save}
+              disabled={busy}
+            >
+              {busy ? "Saving..." : (isEdit ? "Save Changes" : "Create Job")}
+            </SmallButton>
+          </div>
+        }
+      />
+
+      <div className="grid gap-6 lg:grid-cols-[220px_1fr]">
+        <div className="flex gap-1 overflow-x-auto lg:flex-col">
+          {TABS.map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`whitespace-nowrap rounded-lg px-3 py-2 text-left text-sm font-medium transition ${tab === t ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"}`}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+
+        <div>
+          {tab === "Details" && (
+            <Card className="p-6">
+              <h3 className="mb-4 text-sm font-semibold text-slate-900">
+                Job details
+              </h3>
+              <label className="mb-1.5 block text-xs font-medium text-slate-500">
+                Job name
+              </label>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="System Diagnostics Check"
+                className={inputCls + " mb-4"}
+              />
+              <label className="mb-1.5 block text-xs font-medium text-slate-500">
+                Group
+              </label>
+              <input
+                value={group}
+                onChange={(e) => setGroup(e.target.value)}
+                placeholder="maintenance"
+                className={inputCls + " mb-4"}
+              />
+              <label className="mb-1.5 block text-xs font-medium text-slate-500">
+                Description
+              </label>
+              <textarea
+                rows={3}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="What does this job do?"
+                className={inputCls}
+              />
+              <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4">
+                <input
+                  type="checkbox"
+                  checked={requiresApproval}
+                  onChange={(e) => setRequiresApproval(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-blue-600"
+                />
+                <span>
+                  <span className="block text-sm font-medium text-slate-900">
+                    Require admin approval to run
+                  </span>
+                  <span className="block text-xs text-slate-500">
+                    When an operator runs this job it becomes a pending request
+                    on the Approvals page; an admin must approve it before it
+                    executes. Admin runs and cron schedules are not gated.
+                  </span>
+                </span>
+              </label>
+            </Card>
+          )}
+
+          {tab === "Workflow" && (
+            <div className="space-y-6">
+              <Card className="p-6">
+                <div className="mb-4 flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-slate-900">
+                    Steps
+                  </h3>
+                  <Chip>{steps.length} steps</Chip>
+                </div>
+                {steps.length === 0 ? (
+                  <p className="rounded-lg border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-500">
+                    No steps yet. Add a step from the palette below.
+                  </p>
+                ) : (
+                  <ol className="space-y-3">
+                    {steps.map((st, i) => (
+                      <li
+                        key={st.key}
+                        className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="flex items-center gap-2.5 text-sm text-slate-700">
+                            <span className="flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-900">
+                              <Icon name={st.icon} size={14} />
+                            </span>
+                            <span className="font-mono text-xs text-slate-400">
+                              {i + 1}.
+                            </span>
+                            {st.label}
+                            <span className="text-[11px] text-slate-400">
+                              {st.category}
+                            </span>
+                          </span>
+                          <button
+                            onClick={() => removeStep(st.key)}
+                            className="text-slate-400 transition hover:text-red-600"
+                            aria-label="Remove step"
+                          >
+                            <Icon name="trash" size={14} />
+                          </button>
+                        </div>
+                        <div className="ml-9 mr-1 space-y-2">
+                          {["script", "pyscript", "terraform", "kubernetes", "awslambda", "azurefn"].includes(st.id) ? (
+                            <textarea
+                              placeholder={STEP_HINTS[st.id] || `Enter ${st.label.toLowerCase()}...`}
+                              value={st.value || ""}
+                              onChange={(e) => updateStepValue(st.key, e.target.value)}
+                              rows={st.id === "terraform" || st.id === "kubernetes" ? 5 : 3}
+                              className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm font-mono text-slate-800 outline-none focus:border-slate-300 focus:ring-1 focus:ring-slate-300"
+                            />
+                          ) : (
+                            <input
+                              type="text"
+                              placeholder={STEP_HINTS[st.id] || `Enter ${st.label.toLowerCase()} config...`}
+                              value={st.value || ""}
+                              onChange={(e) => updateStepValue(st.key, e.target.value)}
+                              className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm font-mono text-slate-800 outline-none focus:border-slate-300 focus:ring-1 focus:ring-slate-300"
+                            />
+                          )}
+                          {["terraform", "kubernetes", "awslambda", "azurefn"].includes(st.id) && (
+                            // Binds the step to a named Cloud Integration; left
+                            // blank, the tenant's single matching one is used.
+                            <input
+                              type="text"
+                              placeholder="Cloud integration name (optional — uses your only matching integration)"
+                              value={st.connection || ""}
+                              onChange={(e) => updateStepConnection(st.key, e.target.value)}
+                              className="w-full rounded-md border border-slate-200 px-3 py-2 text-xs text-slate-700 outline-none focus:border-slate-300 focus:ring-1 focus:ring-slate-300"
+                            />
+                          )}
+                          {/* Reliability policy — the same knobs Rundeck exposes. */}
+                          <div className="flex flex-wrap items-center gap-4 pt-1 text-xs text-slate-600">
+                            <label className="flex items-center gap-1.5">
+                              Retries
+                              <select
+                                value={st.retries ?? 0}
+                                onChange={(e) =>
+                                  updateStepField(st.key, "retries", Number(e.target.value))
+                                }
+                                className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 outline-none focus:border-slate-300"
+                              >
+                                {[0, 1, 2, 3, 4, 5].map((n) => (
+                                  <option key={n} value={n}>
+                                    {n}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="flex items-center gap-1.5">
+                              <input
+                                type="checkbox"
+                                checked={!!st.continueOnError}
+                                onChange={(e) =>
+                                  updateStepField(st.key, "continueOnError", e.target.checked)
+                                }
+                                className="h-3.5 w-3.5 rounded border-slate-300"
+                              />
+                              Continue on error
+                            </label>
+                          </div>
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </Card>
+
+              <Card className="p-6">
+                <h3 className="mb-4 text-sm font-semibold text-slate-900">
+                  Add a Step
+                </h3>
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {STEP_TYPES.map((t) => {
+                    const locked = t.premium && !advanced;
+                    return (
+                      <button
+                        key={t.id}
+                        onClick={() => addStep(t)}
+                        className="group flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-3.5 text-left transition hover:-translate-y-0.5 hover:border-blue-500 hover:bg-slate-50"
+                      >
+                        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-100 text-slate-900">
+                          <Icon name={t.icon} size={18} />
+                        </span>
+                        <span className="min-w-0">
+                          <span className="flex items-center gap-1.5 text-sm font-medium text-slate-900">
+                            {t.label}
+                            {locked && (
+                              <Icon
+                                name="lock"
+                                size={11}
+                                className="text-slate-400"
+                              />
+                            )}
+                          </span>
+                          <span className="block text-[11px] text-slate-500">
+                            {t.category}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </Card>
+            </div>
+          )}
+
+
+        </div>
+      </div>
+    </div>
+  );
+}

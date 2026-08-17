@@ -1,0 +1,24 @@
+-- ============================================================
+-- Workflow definitions leave core-service.
+--
+-- They now live in workflow-service (autoops_workflow). core-service still
+-- reads them constantly — the run engine snapshots a definition onto every
+-- run, approvals judge complexity, governance resolves the owning project,
+-- SCM sync exports and imports them, compliance counts the gated ones — but
+-- it does that over workflow-service's /internal API instead of a join.
+--
+-- COPY THE ROWS BEFORE THIS MIGRATION RUNS on an existing deployment; the
+-- columns are unchanged, so it is a straight insert:
+--
+--   INSERT INTO autoops_workflow.workflows
+--   SELECT * FROM autoops_core.workflows;
+--
+-- The table is left in place, renamed rather than dropped: run history and
+-- approvals reference workflow ids by value (no FK), so nothing breaks if it
+-- disappears — but a rename keeps the data recoverable if a copy was missed.
+-- Drop it once the split is confirmed in production:
+--
+--   DROP TABLE autoops_core.workflows_moved_to_workflow_service;
+-- ============================================================
+
+RENAME TABLE workflows TO workflows_moved_to_workflow_service;

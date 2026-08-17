@@ -1,0 +1,83 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      mvc:
+        routes:
+          # Identity flows + JWKS/introspection pass straight to auth-service.
+          - id: auth-service
+            uri: ${AUTH_SERVICE_URL:http://localhost:8081}
+            predicates:
+              - Path=/api/auth/**,/oauth2/**
+          # Plans, subscriptions, entitlements, payments.
+          - id: subscription-service
+            uri: ${SUBSCRIPTION_SERVICE_URL:http://localhost:8082}
+            predicates:
+              - Path=/api/plans/**,/api/subscriptions/**,/api/entitlements/**,/api/payments/**,/api/provider/tenants,/api/provider/payments,/api/provider/plans/**,/api/provider/audit
+          # Workflow RUNS stay with the execution engine in core-service, so
+          # this MORE SPECIFIC route must be declared BEFORE workflow-service's
+          # /api/workflows/** — Spring Cloud Gateway matches routes in order and
+          # the first predicate wins.
+          # /inputs rides with /run for the same reason: the input form is
+          # resolved by the execution side, which is the only place that knows
+          # a definition names a Dify workflow. Left off this list it would
+          # fall through to workflow-service and 404 there.
+          - id: core-service-workflow-runs
+            uri: ${CORE_SERVICE_URL:http://localhost:8083}
+            predicates:
+              - Path=/api/workflows/*/run,/api/workflows/*/inputs
+          # Workflow definitions (CRUD, enable/disable).
+          - id: workflow-service
+            uri: ${WORKFLOW_SERVICE_URL:http://localhost:8086}
+            predicates:
+              - Path=/api/workflows/**,/api/projects/*/workflows/**,/api/projects/*/workflows
+          # AI agents, and their runs.
+          #
+          # /api/agent-runs/** is listed explicitly. It does NOT match
+          # /api/agents/**, so without it the run detail and cancel calls fall
+          # through to the catch-all core-service route below and 404 there —
+          # from a service that has never heard of an agent run.
+          - id: agent-service
+            uri: ${AGENT_SERVICE_URL:http://localhost:8087}
+            predicates:
+              - Path=/api/agents/**,/api/agent-runs/**,/api/projects/*/agents/**,/api/projects/*/agents
+          # Notification channels and the rules that fire them.
+          # /api/notification-rules/** does NOT collide with core-service's
+          # /api/notifications/** below — different literal segment — but the
+          # two are easy to confuse: that one is the in-app inbox, this one is
+          # outbound delivery to Slack/Teams/Outlook/Gmail/GitHub.
+          - id: plugin-service
+            uri: ${PLUGIN_SERVICE_URL:http://localhost:8088}
+            predicates:
+              - Path=/api/plugins/**,/api/notification-rules/**
+          # Projects, jobs, cloud integrations, runs (subscription-gated mutations).
+          - id: core-service
+            uri: ${CORE_SERVICE_URL:http://localhost:8083}
+            predicates:
+              # /api/provider/tenants (exact) is subscription-service's billing
+              # view; the .../projects sub-path below is core-service's — the
+              # patterns do not overlap, so ordering between the two is not
+              # load-bearing.
+              - Path=/api/projects/**,/api/jobs/**,/api/cloud/**,/api/runs/**,/api/approvals/**,/api/compliance/**,/api/governance/**,/api/audit/**,/api/notifications/**,/api/nodes/**,/api/secrets/**,/api/webhooks/**,/api/hooks/**,/api/library/**,/api/commands/**,/api/connectors/**,/api/model-providers/**,/api/provider/usage,/api/provider/health,/api/provider/broadcasts,/api/provider/library,/api/provider/tenants/*/projects,/api/provider/rollout,/api/dify/**
+          # Aegis-01, the landing-page voice agent. Anonymous by design —
+          # visitors have no account yet — so voice-agent caps it itself.
+          - id: voice-agent
+            uri: ${VOICE_SERVICE_URL:http://localhost:8085}
+            predicates:
+              - Path=/api/voice/**
+
+autoops:
+  gateway:
+    jwks-uri: ${AUTH_JWKS_URI:http://localhost:8081/oauth2/jwks}
+    issuer: ${JWT_ISSUER:autoops-auth-service}
+    cors-allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:3000}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus

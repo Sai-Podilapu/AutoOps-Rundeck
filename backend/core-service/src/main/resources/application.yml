@@ -1,0 +1,123 @@
+server:
+  port: ${SERVER_PORT:8083}
+
+spring:
+  application:
+    name: core-service
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:autoops_core}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+    username: ${DB_USER:autoops}
+    password: ${DB_PASSWORD:autoops}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate.jdbc.time_zone: UTC
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+autoops:
+  core:
+    jwks-uri: ${AUTH_JWKS_URI:http://localhost:8081/oauth2/jwks}
+    issuer: ${JWT_ISSUER:autoops-auth-service}
+    # Shared secret workflow-service and agent-service must present on this
+    # service's /internal/** endpoints (projects, jobs, run stats, approval
+    # rules, audit).
+    internal-token: ${CORE_INTERNAL_TOKEN:dev-internal-token}
+    # Workflow DEFINITIONS live in workflow-service; the run engine,
+    # approvals, governance, SCM sync and compliance read them from there.
+    workflow:
+      base-url: ${WORKFLOW_SERVICE_URL:http://localhost:8086}
+      internal-token: ${WORKFLOW_INTERNAL_TOKEN:dev-internal-token}
+      connect-timeout: ${WORKFLOW_CONNECT_TIMEOUT:2s}
+      # Generous: SCM import writes a project's whole workflow set.
+      read-timeout: ${WORKFLOW_READ_TIMEOUT:10s}
+    # agent-service: the PROVIDER builds agents here and rolls them out, so
+    # this service needs a write path in. Rollout and revoke only — reading an
+    # agent still goes through agent-service's own API.
+    agent:
+      base-url: ${AGENT_SERVICE_URL:http://localhost:8087}
+      internal-token: ${AGENT_INTERNAL_TOKEN:dev-internal-token}
+      connect-timeout: ${AGENT_CONNECT_TIMEOUT:2s}
+      read-timeout: ${AGENT_READ_TIMEOUT:10s}
+    # plugin-service: outbound notification channels and the tenant rules that
+    # fire them. Every run status transition posts one event here.
+    #
+    # Best-effort by design — PluginClient never throws and never retries, so
+    # a plugin-service that is down or absent slows nothing and fails no run.
+    # Timeouts are the tightest of any peer for that reason: this sits on the
+    # run engine's hot path, and the far side only queues the fan-out before
+    # answering.
+    plugin:
+      base-url: ${PLUGIN_SERVICE_URL:http://localhost:8088}
+      internal-token: ${PLUGIN_INTERNAL_TOKEN:dev-internal-token}
+      connect-timeout: ${PLUGIN_CONNECT_TIMEOUT:1s}
+      read-timeout: ${PLUGIN_READ_TIMEOUT:2s}
+      # Kill switch: false stops event emission and the watchdog entirely.
+      enabled: ${PLUGIN_NOTIFICATIONS_ENABLED:true}
+      # A run still RUNNING this long is reported STALLED, once. Generous so a
+      # legitimately long deployment does not page anyone.
+      stalled-after: ${PLUGIN_STALLED_AFTER:2h}
+      # How far past due a scheduled job drifts before it counts as MISSED.
+      # Must comfortably exceed the scheduler poll interval below, or a job
+      # that is merely about to fire gets reported as missed.
+      missed-after: ${PLUGIN_MISSED_AFTER:10m}
+      watchdog-interval: ${PLUGIN_WATCHDOG_INTERVAL:5m}
+    # Dify backs workflow DESIGN and execution. The API key is a workspace
+    # token that can read and delete every app in the workspace, so it lives
+    # here and never reaches a browser — the console goes through
+    # /api/dify/** on this service instead.
+    # Unset is a valid state: the bridge answers 503 naming the missing
+    # setting rather than pretending the feature works.
+    dify:
+      base-url: ${DIFY_BASE_URL:}
+      api-key: ${DIFY_API_KEY:}
+      connect-timeout: ${DIFY_CONNECT_TIMEOUT:3s}
+      read-timeout: ${DIFY_READ_TIMEOUT:30s}
+    subscription:
+      base-url: ${SUBSCRIPTION_SERVICE_URL:http://localhost:8082}
+      connect-timeout: ${SUBSCRIPTION_CONNECT_TIMEOUT:2s}
+      read-timeout: ${SUBSCRIPTION_READ_TIMEOUT:3s}
+      # FAIL-CLOSED default: mutations are denied when subscription-service is down.
+      entitlement-fail-open: ${ENTITLEMENT_FAIL_OPEN:false}
+      # Shared secret for tenant-scoped scheduler checks (/internal/**).
+      internal-token: ${SUBSCRIPTION_INTERNAL_TOKEN:dev-internal-token}
+    execution:
+      pool-size: ${EXECUTION_POOL_SIZE:4}
+      # simulated | remote — remote sends every step to job-service for REAL
+      # execution (shell commands, scripts, python, ssh, REST calls).
+      mode: ${EXECUTION_MODE:simulated}
+      job-service-url: ${JOB_SERVICE_URL:http://localhost:8084}
+      job-service-token: ${JOB_INTERNAL_TOKEN:dev-internal-token}
+      step-timeout: ${EXECUTION_STEP_TIMEOUT:60s}
+      retry-delay: ${EXECUTION_RETRY_DELAY:2s}
+      # Simulated executor timing (simulated mode only).
+      simulated-step-min-delay: ${EXECUTION_STEP_MIN_DELAY:300ms}
+      simulated-step-max-delay: ${EXECUTION_STEP_MAX_DELAY:1500ms}
+    scheduler:
+      enabled: ${SCHEDULER_ENABLED:true}
+      poll-interval: ${SCHEDULER_POLL_INTERVAL:30s}
+    cloud:
+      # AES key material for cloud credentials at rest. ProdSafetyGuard
+      # refuses to start prod with the dev default.
+      credential-key: ${CLOUD_CRED_KEY:dev-cloud-cred-key}
+    # Probe-only targets for the provider Platform Health page. This service
+    # never calls either one for real work, so they have no base URL elsewhere.
+    health:
+      voice-base-url: ${VOICE_SERVICE_URL:http://localhost:8085}
+      gateway-base-url: ${GATEWAY_URL:http://localhost:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html

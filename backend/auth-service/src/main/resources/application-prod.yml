@@ -1,0 +1,23 @@
+# Prod profile: keys are loaded from a PKCS#12 keystore; secrets come from the
+# environment. ProdSafetyGuard refuses startup if dev defaults leak into prod
+# (default gateway/DB secrets, missing keystore, dev profile active).
+logging:
+  level:
+    com.intertec.autoops.auth: INFO
+
+spring:
+  datasource:
+    # TLS to MySQL is mandatory in prod.
+    url: jdbc:mysql://${DB_HOST}:${DB_PORT:3306}/${DB_NAME:autoops_auth}?sslMode=REQUIRED&serverTimezone=UTC
+
+autoops:
+  auth:
+    keystore-path: ${JWT_KEYSTORE_PATH}
+    keystore-password: ${JWT_KEYSTORE_PASSWORD}
+    tenant:
+      # The gateway must inject a validated X-Tenant-ID; bare requests are rejected.
+      require-header: ${TENANT_REQUIRE_HEADER:true}
+
+springdoc:
+  swagger-ui:
+    enabled: false

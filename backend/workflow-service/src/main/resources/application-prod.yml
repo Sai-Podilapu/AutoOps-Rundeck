@@ -1,0 +1,20 @@
+# Prod profile: TLS to MySQL is mandatory, Swagger is off, secrets come from
+# the environment. ProdSafetyGuard refuses startup if dev defaults leak into
+# prod (default DB password, localhost JWKS/subscription URL, fail-open gate,
+# dev internal tokens).
+#
+# The base application.yml carries useSSL=false for local Docker MySQL. RDS is
+# a different machine across the VPC, so the connection is overridden here to
+# sslMode=REQUIRED — workflow definitions carry the graph a tenant's automation
+# runs, and they must not cross the network in the clear.
+logging:
+  level:
+    com.intertec.autoops.workflow: INFO
+
+spring:
+  datasource:
+    url: jdbc:mysql://${DB_HOST}:${DB_PORT:3306}/${DB_NAME:autoops_workflow}?sslMode=REQUIRED&serverTimezone=UTC
+
+springdoc:
+  swagger-ui:
+    enabled: false

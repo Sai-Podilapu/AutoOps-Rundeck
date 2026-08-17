@@ -1,0 +1,96 @@
+# ---------------------------------------------------------------------------
+# Dependencies and build output
+# ---------------------------------------------------------------------------
+# Frontend build output and deps (source lives in frontend/).
+node_modules/
+frontend/dist/
+.vite/
+
+# Maven build output
+target/
+!.mvn/wrapper/maven-wrapper.jar
+
+# Local Maven repository. Docker-based `mvn` runs mount this at the repo root,
+# so it fills with hundreds of MB of downloaded jars. `.m2;C*` catches the
+# stray dir a malformed -v argument creates on Windows.
+.m2/
+.m2;C*
+
+# Vitest / JaCoCo coverage output
+coverage/
+frontend/coverage/
+
+# Python bytecode (reports/build_tracker.py, Scripts/_gen helpers)
+__pycache__/
+*.pyc
+
+# ---------------------------------------------------------------------------
+# Secrets
+# ---------------------------------------------------------------------------
+# .env holds the real SendGrid key, OAuth client secrets and the
+# cloud-credential encryption key. .env.example is the checked-in template.
+.env
+*.env.local
+.env.*.local
+# Stray copy of the same secrets at the repo root, no dot. Real keys inside.
+/env
+# The ngrok authtoken lives in the root .env too (already ignored above).
+# deploy-demo/.env.demo was folded into it; kept here so an old copy can never
+# be committed by accident.
+deploy-demo/.env.demo
+deploy/aws-ec2/.env.prod
+.env.prod
+*.pem
+*.key
+!frontend/src/**/*.key
+# Java keystores. secrets/jwt-keystore.p12 is generated on the host during
+# deploy and signs every access token — it must never reach the repo.
+*.p12
+*.jks
+*.pfx
+secrets/
+
+# ---------------------------------------------------------------------------
+# Local tooling / IDE
+# ---------------------------------------------------------------------------
+.idea/
+*.iml
+.vscode/
+.claude/
+
+# ---------------------------------------------------------------------------
+# OS
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+
+# ---------------------------------------------------------------------------
+# Logs and captured build/test output
+# ---------------------------------------------------------------------------
+*.log
+core-test-out.txt
+mp-test-out.txt
+plugin-test-out.txt
+fe-build.txt
+*-test-out.txt
+
+# ---------------------------------------------------------------------------
+# Internal delivery documents (not source; keep out of the code repo)
+# ---------------------------------------------------------------------------
+reports/
+*.pdf
+*.xlsx
+*.xls
+*.docx
+*.pptx
+
+# ---------------------------------------------------------------------------
+# Database dumps (data, not code)
+# ---------------------------------------------------------------------------
+# The 2 MB provider-catalog dump. It is seed DATA, restored from S3 on the
+# host — see the deploy runbook. Flyway migrations under
+# src/main/resources/db/migration are code and stay tracked.
+/library-catalog.sql
+*.dump
+*.sql.gz
+*.mysqldump

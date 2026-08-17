@@ -1,0 +1,64 @@
+server:
+  port: ${SERVER_PORT:8088}
+
+spring:
+  application:
+    name: plugin-service
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:autoops_plugin}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+    username: ${DB_USER:autoops}
+    password: ${DB_PASSWORD:autoops}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate.jdbc.time_zone: UTC
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+autoops:
+  plugin:
+    jwks-uri: ${AUTH_JWKS_URI:http://localhost:8081/oauth2/jwks}
+    issuer: ${JWT_ISSUER:autoops-auth-service}
+    # Shared secret this service REQUIRES on its own /internal/** endpoints.
+    # core-service posts job and workflow lifecycle events there.
+    internal-token: ${PLUGIN_INTERNAL_TOKEN:dev-internal-token}
+    # Encryption at rest for every plugin credential (webhook URLs, API
+    # tokens, SMTP passwords). Distinct from core-service's CLOUD_CRED_KEY:
+    # a leak of one must not decrypt the other. ProdSafetyGuard-equivalent
+    # check refuses to boot prod on the dev default.
+    credential-key: ${PLUGIN_CRED_KEY:dev-plugin-cred-key}
+    delivery:
+      connect-timeout: ${PLUGIN_CONNECT_TIMEOUT:3s}
+      read-timeout: ${PLUGIN_READ_TIMEOUT:10s}
+      # A channel that fails this many times in a row is parked and stops
+      # being attempted until the tenant re-tests it. Protects both the
+      # queue and the third party's rate limits.
+      max-consecutive-failures: ${PLUGIN_MAX_FAILURES:20}
+      # Bounded worker pool for outbound sends; one slow webhook must not
+      # stall the lifecycle events of every other tenant.
+      workers: ${PLUGIN_WORKERS:8}
+      queue-capacity: ${PLUGIN_QUEUE_CAPACITY:500}
+      # delivery_attempts gains a row per run per matching channel — the
+      # fastest-growing table here, and the one that fills the disk if it is
+      # never trimmed. ISO-8601 durations.
+      retention: ${PLUGIN_DELIVERY_RETENTION:P30D}
+      retention-initial-delay: ${PLUGIN_RETENTION_INITIAL_DELAY:PT5M}
+      retention-interval: ${PLUGIN_RETENTION_INTERVAL:PT12H}
+    # Deep link back into the console, used for the "View run" button.
+    console-base-url: ${CONSOLE_BASE_URL:http://localhost:5173}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html

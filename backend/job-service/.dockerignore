@@ -1,0 +1,9 @@
+# Keep the build context minimal and reproducible. The Dockerfile only needs
+# pom.xml, src/, and requirements.txt — everything below is excluded so it never
+# affects the build context (or the reproducible image digest).
+target/
+*.oci.tar
+build-reproducible.sh
+.idea/
+*.iml
+.git/

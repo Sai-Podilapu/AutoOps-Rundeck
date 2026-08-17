@@ -1,0 +1,250 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autoops.intertecsys.com/schema/workflow.schema.json",
+  "title": "Provider-authored workflow definition",
+  "description": "Validation contract for workflows/<DOMAIN>/*.json. This file is the SINGLE source of truth for a use case's input form: the console renders it, and AgentToolbox turns the same declaration into the model's tool schema. Agents deliberately do NOT restate inputs — two copies drift, and a form that disagrees with the model's contract is worse than either alone.",
+  "type": "object",
+  "required": [
+    "taskId",
+    "domain",
+    "title",
+    "description",
+    "runtime",
+    "inputs",
+    "nodes"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "taskId": {
+      "type": "string",
+      "pattern": "^RD-[0-9]{3}$"
+    },
+    "domain": {
+      "type": "string",
+      "enum": [
+        "AWS",
+        "Azure",
+        "Active Directory",
+        "Exchange On-Premises",
+        "Linux",
+        "Microsoft 365",
+        "Network",
+        "SQL Server",
+        "Security",
+        "VMware",
+        "Windows Server"
+      ]
+    },
+    "title": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128
+    },
+    "description": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 512
+    },
+    "category": {
+      "type": "string",
+      "maxLength": 64
+    },
+    "runtime": {
+      "type": "string",
+      "enum": [
+        "shell",
+        "ssh",
+        "powershell",
+        "python",
+        "rest",
+        "terraform",
+        "kubernetes"
+      ],
+      "description": "Runner the underlying automation needs. 'powershell' is currently blocked: job-service has no PowerShell runner or WinRM transport."
+    },
+    "blockedBy": {
+      "type": "string",
+      "description": "Present when no runner exists for this runtime yet."
+    },
+    "sourceScript": {
+      "type": "string"
+    },
+    "inputs": {
+      "type": "array",
+      "description": "Form rendered to the operator AND the model's argument contract.",
+      "items": {
+        "type": "object",
+        "required": [
+          "variable",
+          "label",
+          "type",
+          "required"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "variable": {
+            "type": "string",
+            "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$",
+            "description": "Must match a real parameter of the underlying automation."
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "string",
+              "number",
+              "boolean",
+              "select"
+            ]
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "description": "select only. Becomes enum in the model's tool schema."
+          },
+          "pattern": {
+            "type": "string",
+            "description": "ECMA regex the value must match."
+          },
+          "min": {
+            "type": "number"
+          },
+          "max": {
+            "type": "number"
+          },
+          "default": {},
+          "placeholder": {
+            "type": "string"
+          },
+          "help": {
+            "type": "string",
+            "description": "Shown under the field. State the blast radius, not the type."
+          },
+          "requiredWhen": {
+            "type": "object",
+            "required": [
+              "field",
+              "equals"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "equals": {}
+            },
+            "description": "Conditionally mandatory, e.g. approval reference only when remediating."
+          },
+          "consumedBy": {
+            "type": "string",
+            "enum": [
+              "node",
+              "agent"
+            ],
+            "default": "node",
+            "description": "Who reads this value. 'node' means a {{placeholder}} in a step must use it. 'agent' means it reaches the model as a tool argument and informs its judgement instead — a threshold the model compares against, not a shell flag."
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "select"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "required": [
+                "options"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "number"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "not": {
+                "required": [
+                  "options"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Steps ExecutionEngine walks. {{Variable}} placeholders are resolved from the run's inputs.",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "label"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "minLength": 1
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "value": {
+            "type": "string"
+          },
+          "retries": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5
+          },
+          "continueOnError": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "runtime": {
+            "const": "powershell"
+          }
+        },
+        "required": [
+          "runtime"
+        ]
+      },
+      "then": {
+        "required": [
+          "blockedBy"
+        ]
+      }
+    }
+  ]
+}

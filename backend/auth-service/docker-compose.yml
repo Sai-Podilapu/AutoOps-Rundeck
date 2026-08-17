@@ -1,0 +1,37 @@
+# Local backing infrastructure for auth-service development.
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: autoops_auth
+      # Matches the app defaults DB_USER/DB_PASSWORD (autoops/autoops). The MySQL
+      # image rejects MYSQL_USER=root, so a dedicated app user is created here.
+      MYSQL_USER: autoops
+      MYSQL_PASSWORD: autoops
+    ports:
+      # Host 3307: many dev machines already run a local mysqld on 3306.
+      # Run the app with DB_PORT=3307 (see README / run steps).
+      - "3307:3306"
+    volumes:
+      # First-init only: creates autoops_subscription (+ grants) alongside
+      # the env-created autoops_auth.
+      - ./mysql-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.0
+    command: start-dev
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: Admin123
+    ports:
+      - "8180:8080"

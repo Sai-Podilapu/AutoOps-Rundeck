@@ -1,0 +1,134 @@
+{
+  "taskId": "RD-142",
+  "domain": "AWS",
+  "title": "AWS Unused EBS Volume Cleanup",
+  "description": "Reports EBS volumes unattached beyond a minimum age and, once approved, deletes them after taking a retained recovery snapshot of each. Report-only unless Execute and a valid approval reference are both supplied.",
+  "category": "AWS",
+  "runtime": "powershell",
+  "blockedBy": "job-service has no runner for type 'powershell' and no WinRM transport. This workflow is published so the agent's tool reference resolves, but every run will fail until that runner exists.",
+  "sourceScript": "Scripts/01-AWS/Remove-AwsUnusedEbsVolume.ps1",
+  "inputs": [
+    {
+      "variable": "Region",
+      "label": "AWS region",
+      "type": "select",
+      "required": true,
+      "options": [
+        "me-central-1",
+        "me-south-1",
+        "eu-west-1",
+        "eu-central-1",
+        "us-east-1",
+        "us-west-2",
+        "ap-south-1",
+        "ap-southeast-1"
+      ],
+      "help": "One region per run. Volumes are region-scoped."
+    },
+    {
+      "variable": "ProfileName",
+      "label": "AWS profile / SSO profile",
+      "type": "string",
+      "required": false,
+      "pattern": "^[A-Za-z0-9._-]{1,64}$",
+      "help": "Leave empty to use the host's IAM role. Prefer a role over a named profile."
+    },
+    {
+      "variable": "MinimumAgeDays",
+      "label": "Minimum days unattached",
+      "type": "number",
+      "required": true,
+      "min": 7,
+      "max": 3650,
+      "default": 30,
+      "help": "Volumes detached more recently than this are never considered. The floor is 7 days deliberately — shorter catches volumes mid-migration."
+    },
+    {
+      "variable": "ExcludeTagKey",
+      "label": "Protection tag key",
+      "type": "string",
+      "required": true,
+      "pattern": "^[A-Za-z0-9:_.\\/=+-]{1,128}$",
+      "default": "AutoOps:DoNotDelete",
+      "help": "Any volume carrying this tag is excluded unconditionally, even with a valid approval."
+    },
+    {
+      "variable": "ProtectedList",
+      "label": "Protected list file",
+      "type": "string",
+      "required": false,
+      "placeholder": "/etc/autoops/keep-volumes.txt",
+      "help": "Volume ids or names that must never be touched. Cannot be overridden by any other setting."
+    },
+    {
+      "variable": "Reason",
+      "label": "Change reason",
+      "type": "string",
+      "required": true,
+      "pattern": "^.{10,256}$",
+      "default": "Unattached EBS volume cleanup",
+      "help": "Recorded in the approval artifact and the audit log."
+    },
+    {
+      "variable": "TicketReference",
+      "label": "ITSM ticket",
+      "type": "string",
+      "required": false,
+      "pattern": "^[A-Z][A-Z0-9]+-[0-9]+$",
+      "placeholder": "CHG-10482",
+      "help": "Recorded alongside the approval reference in the audit trail."
+    },
+    {
+      "variable": "Execute",
+      "label": "Execute deletions",
+      "type": "boolean",
+      "required": false,
+      "default": false,
+      "help": "Off means report only. Switching this on deletes volumes and requires an approval reference."
+    },
+    {
+      "variable": "ApprovalReference",
+      "label": "Approval reference",
+      "type": "string",
+      "required": false,
+      "requiredWhen": {
+        "field": "Execute",
+        "equals": true
+      },
+      "pattern": "^APR-[A-Za-z0-9-]{6,}$",
+      "placeholder": "APR-7F3A9C21",
+      "help": "Issued by a prior report-only run once a human approved the candidate list."
+    },
+    {
+      "variable": "SkipSnapshot",
+      "label": "Skip pre-deletion snapshot",
+      "type": "boolean",
+      "required": false,
+      "default": false,
+      "help": "Strongly discouraged. The snapshot is the only recovery path."
+    },
+    {
+      "variable": "OutputFormat",
+      "label": "Output format",
+      "type": "select",
+      "required": true,
+      "options": [
+        "Console",
+        "CSV",
+        "JSON",
+        "HTML"
+      ],
+      "default": "JSON",
+      "help": "CSV or HTML when the candidate list is going to a human approver."
+    }
+  ],
+  "nodes": [
+    {
+      "type": "powershell",
+      "label": "Report unattached volumes (and delete only if approved)",
+      "value": "./Scripts/01-AWS/Remove-AwsUnusedEbsVolume.ps1 -Region '{{Region}}' -ProfileName '{{ProfileName}}' -MinimumAgeDays {{MinimumAgeDays}} -ExcludeTagKey '{{ExcludeTagKey}}' -ProtectedList '{{ProtectedList}}' -Reason '{{Reason}}' -TicketReference '{{TicketReference}}' -ApprovalReference '{{ApprovalReference}}' -OutputFormat '{{OutputFormat}}' -Execute:${{Execute}} -SkipSnapshot:${{SkipSnapshot}}",
+      "retries": 0,
+      "continueOnError": false
+    }
+  ]
+}
