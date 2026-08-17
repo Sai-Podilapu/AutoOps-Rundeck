@@ -1,0 +1,132 @@
+# ============================================================================
+# BUILD & PUBLISH — this repo's half of the pipeline.
+#
+# This repo holds the SOURCE. It builds container images and pushes them to a
+# private ECR registry, then notifies the deploy repo that a new tag exists.
+# It never touches the production host and holds no production host secrets.
+#
+# The deploy repo holds docker-compose.prod.yml, the Caddyfile and the workflow
+# that actually rolls out. That split is deliberate: anyone with production
+# access sees configuration, never this codebase.
+#
+#   source (here) ──build──▶ ECR ──dispatch──▶ deploy repo ──▶ EC2
+#
+# Auth is OIDC — GitHub presents a short-lived signed token and AWS trades it
+# for ~1h credentials scoped to this repo. No long-lived AWS key is stored.
+# ============================================================================
+name: Build & Publish Images
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # Required for OIDC. Without it, role assumption fails with a confusing
+  # "Not authorized to perform sts:AssumeRoleWithWebIdentity".
+  id-token: write
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_NAMESPACE: autoops
+
+jobs:
+  build:
+    name: build / ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      # One service failing should not hide the results of the other nine.
+      fail-fast: false
+      matrix:
+        include:
+          - service: agent-service
+            context: backend/agent-service
+          - service: api-gateway
+            context: backend/api-gateway
+          - service: auth-service
+            context: backend/auth-service
+          - service: core-service
+            context: backend/core-service
+          - service: job-service
+            context: backend/job-service
+          - service: plugin-service
+            context: backend/plugin-service
+          - service: subscription-service
+            context: backend/subscription-service
+          - service: voice-agent
+            context: backend/voice-agent
+          - service: workflow-service
+            context: backend/workflow-service
+          - service: frontend
+            context: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_BUILD_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          # The SHA tag is what makes a deploy immutable and a rollback a
+          # one-line change rather than a rebuild. "latest" only ever moves.
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_NAMESPACE }}/${{ matrix.service }}:sha-${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_NAMESPACE }}/${{ matrix.service }}:latest
+          # Layer cache in GitHub's own store. Without this every run
+          # re-downloads the full Maven dependency tree for nine JVM services,
+          # which is by far the slowest thing in this pipeline.
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          provenance: false
+
+  # --------------------------------------------------------------------------
+  # Tell the deploy repo a complete image set is ready. It runs only after ALL
+  # ten builds succeed — a partial set would deploy a stack where some services
+  # are the new build and some are the previous one.
+  # --------------------------------------------------------------------------
+  notify-deploy-repo:
+    name: notify deploy repo
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - name: Dispatch to deploy repo
+        env:
+          # Fine-grained PAT (or GitHub App token) with Contents: write on the
+          # DEPLOY repo only. It cannot read this repository's source.
+          GH_TOKEN: ${{ secrets.DEPLOY_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ vars.DEPLOY_REPO }}/dispatches" \
+            -d @- <<EOF
+          {
+            "event_type": "images-published",
+            "client_payload": {
+              "image_tag": "sha-${{ github.sha }}",
+              "source_sha": "${{ github.sha }}",
+              "source_ref": "${{ github.ref_name }}"
+            }
+          }
+          EOF
+          echo "Notified ${{ vars.DEPLOY_REPO }} that sha-${{ github.sha }} is ready."
