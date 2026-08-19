@@ -2,7 +2,9 @@ package com.intertec.autoops.core.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.intertec.autoops.core.client.AgentClient;
 import com.intertec.autoops.core.client.EntitlementClient;
+import com.intertec.autoops.core.client.WorkflowClient;
 import com.intertec.autoops.core.domain.LibraryItem;
 import com.intertec.autoops.core.exception.CoreException;
 import com.intertec.autoops.core.repo.LibraryItemRepository;
@@ -33,13 +35,43 @@ public class LibraryService {
     private final SubscriptionGate gate;
     private final EntitlementClient entitlementClient;
     private final ObjectMapper objectMapper;
+    private final WorkflowClient workflowClient;
+    private final AgentClient agentClient;
 
     public LibraryService(LibraryItemRepository libraryRepository, SubscriptionGate gate,
-                          EntitlementClient entitlementClient, ObjectMapper objectMapper) {
+                          EntitlementClient entitlementClient, ObjectMapper objectMapper,
+                          WorkflowClient workflowClient, AgentClient agentClient) {
         this.libraryRepository = libraryRepository;
         this.gate = gate;
         this.entitlementClient = entitlementClient;
         this.objectMapper = objectMapper;
+        this.workflowClient = workflowClient;
+        this.agentClient = agentClient;
+    }
+
+    /**
+     * Live delivered-copy count per catalog item, keyed by catalog id.
+     *
+     * <p>Read from the services that hold the deliveries rather than kept as a
+     * counter on the catalog row. A counter is wrong in both directions: it
+     * would miss a delivery made through the /internal endpoint by anything
+     * other than RolloutService, and it could never come back down when a
+     * customer's copy is revoked. Two rows in the catalog claiming "3 rollouts"
+     * when one customer has since been removed is worse than no number.
+     *
+     * <p>PROVIDER-only data — it says how many customers hold each template —
+     * so the caller decides whether to ask for it. Both underlying reads
+     * degrade to empty on failure, so a service being down costs the number,
+     * never the catalog.
+     */
+    public java.util.Map<String, Long> rolloutCounts() {
+        java.util.Map<String, Long> merged =
+                new java.util.HashMap<>(workflowClient.rolloutCountsBySource());
+        // Merged, not overwritten: catalog ids are unique across types, but a
+        // put() here would silently drop every agent count if that ever changed.
+        agentClient.rolloutCountsBySource()
+                .forEach((sourceId, count) -> merged.merge(sourceId, count, Long::sum));
+        return merged;
     }
 
     /** Catalog + the tenant's own copies; locked computed from the plan. */

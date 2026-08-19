@@ -111,5 +111,15 @@
       "retries": 0,
       "continueOnError": true
     }
+  ],
+  "requires": [
+    {
+      "kind": "ssh_access",
+      "customerText": "SSH access to the servers you want checked, using a key you have given us. The account only needs to read system information."
+    },
+    {
+      "kind": "network_access",
+      "customerText": "The servers must be reachable from AutoOps on port 22."
+    }
   ]
 }

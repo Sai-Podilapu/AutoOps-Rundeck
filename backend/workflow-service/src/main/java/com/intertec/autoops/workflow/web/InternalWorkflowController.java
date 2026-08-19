@@ -73,6 +73,19 @@ public class InternalWorkflowController {
         return workflowService.countsByTenant();
     }
 
+    /**
+     * Delivered copies per catalog item, for the provider's own library view.
+     *
+     * <p>Unscoped for the same reason as {@link #counts()} — "how many
+     * customers hold this template" is inherently cross-tenant — and like it,
+     * this returns counts keyed by catalog id and never names a tenant or
+     * returns any workflow content.
+     */
+    @GetMapping("/internal/workflows/rollout-counts")
+    public Map<String, Long> rolloutCounts() {
+        return workflowService.rolloutCountsBySource();
+    }
+
     /** Trusted create (project already resolved by the caller). */
     @PostMapping("/internal/projects/{projectId}/workflows")
     public WorkflowView create(@PathVariable Long projectId,

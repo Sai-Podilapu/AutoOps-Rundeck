@@ -43,6 +43,16 @@ public class InternalAgentController {
         return Map.of("count", agentService.countForTenant(tenantId));
     }
 
+    /**
+     * Delivered copies per catalog item, keyed by catalog id, for the provider's
+     * library view. Cross-tenant by nature — "how many customers hold this" is
+     * the question — but it names no tenant and returns no persona.
+     */
+    @GetMapping("/internal/agents/rollout-counts")
+    public Map<String, Long> rolloutCounts() {
+        return agentService.rolloutCountsBySource();
+    }
+
     /** What core-service echoes back after a rollout — never the persona. */
     public record RolledOutAgent(Long id, String name, int toolCount) {
     }
@@ -56,7 +66,8 @@ public class InternalAgentController {
                                   @Valid @RequestBody AgentRequest request) {
         Agent agent = agentService.rollOut(tenantId, actor, accessToken, projectId, sourceId,
                 request.name(), request.description(), request.model(),
-                request.instructions(), request.tools());
+                request.instructions(), request.graphRef(), request.graphVersion(),
+                request.tools());
         return new RolledOutAgent(agent.getId(), agent.getName(), agent.getToolCount());
     }
 

@@ -21,6 +21,9 @@ window.scrollTo = window.scrollTo || (() => {});
 // a real network. Individual tests replace this with their own stub.
 beforeEach(() => {
   localStorage.clear();
+  // Tokens live in sessionStorage (one session per TAB). Without clearing it a
+  // signed-in session leaks from one test into the next.
+  sessionStorage.clear();
   global.fetch = vi.fn(() => {
     throw new Error("unstubbed fetch — the suite is hermetic, stub it in the test");
   });

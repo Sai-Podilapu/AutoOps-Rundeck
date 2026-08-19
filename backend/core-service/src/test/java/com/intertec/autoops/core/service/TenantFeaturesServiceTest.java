@@ -84,6 +84,14 @@ class TenantFeaturesServiceTest {
     /** WebhookService resolves WORKFLOW targets through workflow-service now. */
     @MockBean
     private WorkflowClient workflowClient;
+    /**
+     * LibraryService reads live rollout counts from both services that hold
+     * delivered copies. Mocked to nothing here: these tests are about the
+     * catalog rows, and an unmocked client would make them depend on a
+     * cross-service call.
+     */
+    @MockBean
+    private com.intertec.autoops.core.client.AgentClient agentClient;
     @MockBean
     private RunService runService;
 

@@ -10,6 +10,7 @@ import {
 } from "../../components/app/appui";
 import Icon from "../../components/Icon";
 import AgentRunPanel from "../../components/app/AgentRunPanel";
+import ModelPicker from "../../components/app/ModelPicker";
 import { useStore } from "../../store/store";
 import { api } from "../../lib/api";
 import { fmtDate } from "../../lib/format";
@@ -33,6 +34,7 @@ export default function AgentsHub() {
   // Which agent's run panel is open. Held here rather than on the card so
   // only one panel can exist at a time.
   const [running, setRunning] = useState(null);
+  const [configuring, setConfiguring] = useState(null);
   const canRun = can("runWorkflow");
 
   const load = async () => {
@@ -202,6 +204,12 @@ export default function AgentsHub() {
                       the record of what this agent has done in the workspace,
                       and reading it is not a privileged act. Starting a run
                       inside the panel still needs canRun. */}
+                  {/* Allowed on a provider-managed agent too: the persona
+                      stays sealed, but which vendor processes this
+                      workspace's data is the customer's decision. */}
+                  <SmallButton icon="gear" onClick={() => setConfiguring(a)}>
+                    {a.model ? "Change model" : "Configure model"}
+                  </SmallButton>
                   <SmallButton icon="chat" onClick={() => setRunning(a)}>
                     {a.enabled ? "Run" : "History"}
                   </SmallButton>
@@ -218,6 +226,18 @@ export default function AgentsHub() {
             </Card>
           ))}
         </div>
+      )}
+
+      {configuring && (
+        <ModelPicker
+          agent={configuring}
+          pushToast={pushToast}
+          onClose={() => setConfiguring(null)}
+          onSaved={() => {
+            setConfiguring(null);
+            load();
+          }}
+        />
       )}
 
       {running && (

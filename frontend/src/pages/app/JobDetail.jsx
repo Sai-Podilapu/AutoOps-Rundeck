@@ -159,7 +159,9 @@ export default function JobDetail() {
   const stats = [
     { k: "Status", v: <StatusBadge status={badgeStatus(job.status)} /> },
     { k: "Avg duration", v: fmtDuration(job.avgDurationMs) },
-    { k: "Success rate", v: (job.successRate ?? 0) + "%" },
+    // Null means never run. Showing 0% would claim it fails every time,
+    // which is the same lie as showing 100% — just in the other direction.
+    { k: "Success rate", v: job.successRate == null ? "—" : job.successRate + "%" },
     { k: "Total runs", v: job.runsTotal ?? runs.length },
     { k: "Last run", v: fmtDate(job.lastRunAt) },
   ];

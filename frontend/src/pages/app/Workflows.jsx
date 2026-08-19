@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   PageHeader,
@@ -23,6 +23,16 @@ const stateBadge = (s) => {
 };
 
 function SuccessBar({ value }) {
+  // No runs yet is not a score. Rendering an empty track and "No runs yet"
+  // keeps the column aligned without claiming a record that does not exist.
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return (
+      <div className="flex items-center gap-2">
+        <div className="h-1.5 w-24 overflow-hidden rounded-full bg-slate-100" />
+        <span className="text-xs text-slate-400">No runs yet</span>
+      </div>
+    );
+  }
   const pct = Math.max(0, Math.min(100, Number(value) || 0));
   const fillStyle = { width: pct + "%" };
   const tone =
@@ -47,6 +57,22 @@ export default function Workflows() {
   /** Workflow id whose input schema is being fetched — disables just that row. */
   const [asking, setAsking] = useState(null);
   const [starting, setStarting] = useState(false);
+  // Rows with a run in flight. A run is asynchronous server-side, so
+  // starting it returns long before it finishes — without this the row
+  // looks untouched and people press Run again.
+  const [runningIds, setRunningIds] = useState(() => new Set());
+
+  // Runs start from places this page cannot see — an agent, a schedule, the
+  // API — so the row's live state has to be polled rather than inferred from
+  // the last thing clicked here. Faster while something is in flight, slow
+  // enough otherwise to be unnoticeable.
+  const anyRunning = rows.some((r) => r.running) || runningIds.size > 0;
+  const reloadRef = useRef(reload);
+  reloadRef.current = reload;
+  useEffect(() => {
+    const timer = setInterval(() => reloadRef.current(), anyRunning ? 3000 : 12000);
+    return () => clearInterval(timer);
+  }, [anyRunning]);
 
   const togglePaused = async (row) => {
     try {
@@ -71,12 +97,40 @@ export default function Workflows() {
         pushToast("Workflow run started", "cyan");
       }
       setPrompt(null);
+      if (!res?.approvalRequired) watchRun(id);
       reload();
     } catch (e) {
       pushToast(e.message || "Could not run workflow", "red");
     } finally {
       setStarting(false);
     }
+  };
+
+  /**
+   * Keep a row marked running until the server says it finished.
+   *
+   * Driven by the row's own lastRun changing, not a timer: a spinner that
+   * stops after a fixed delay would claim a result it never saw. Gives up
+   * after a couple of minutes so a stuck run does not spin forever.
+   */
+  const watchRun = (id) => {
+    const before = rows.find((r) => r.id === id)?.lastRunAt ?? null;
+    setRunningIds((prev) => new Set(prev).add(id));
+    let polls = 0;
+    const timer = setInterval(async () => {
+      polls += 1;
+      const fresh = await reload();
+      const now = (Array.isArray(fresh) ? fresh : []).find((r) => r.id === id);
+      const finished = now && now.lastRunAt !== before;
+      if (finished || polls >= 40) {
+        clearInterval(timer);
+        setRunningIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }
+    }, 3000);
   };
 
   /**
@@ -151,7 +205,21 @@ export default function Workflows() {
           {
             key: "state",
             label: "State",
-            render: (r) => <StatusBadge status={stateBadge(r.state)} />,
+            render: (r) =>
+              r.running || runningIds.has(r.id) ? (
+                // A run is asynchronous, so the row has to say so until the
+                // server reports a result — otherwise it looks untouched and
+                // people press Run a second time.
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-blue-400/30 bg-blue-400/10 px-2.5 py-0.5 text-xs font-medium text-blue-600">
+                  <span className="relative flex h-1.5 w-1.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-500 opacity-75" />
+                    <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-blue-500" />
+                  </span>
+                  Running
+                </span>
+              ) : (
+                <StatusBadge status={stateBadge(r.state)} />
+              ),
           },
           {
             key: "validation",
@@ -196,11 +264,15 @@ export default function Workflows() {
                   <SmallButton
                     icon="play"
                     variant="primary"
-                    disabled={!r.active || asking === r.id}
+                    disabled={!r.active || asking === r.id || r.running || runningIds.has(r.id)}
                     title={r.active ? undefined : "Resume this workflow to run it"}
                     onClick={() => startRun(r)}
                   >
-                    {asking === r.id ? "Checking…" : "Run"}
+                    {asking === r.id
+                      ? "Checking…"
+                      : r.running || runningIds.has(r.id)
+                        ? "Running…"
+                        : "Run"}
                   </SmallButton>
                   <SmallButton
                     icon={r.active ? "stop" : "play"}

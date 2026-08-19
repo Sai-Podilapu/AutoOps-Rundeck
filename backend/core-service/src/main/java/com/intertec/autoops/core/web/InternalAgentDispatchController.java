@@ -147,6 +147,12 @@ public class InternalAgentDispatchController {
         Map<String, Object> out = new HashMap<>();
         out.put("workflowId", workflow.id());
         out.put("name", workflow.name());
+        // What the automation actually DOES, for the agent's tool description.
+        // A title alone is not enough to decide whether a tool can answer a
+        // question: "S3 Public Access Audit" reads like a security scan, and
+        // an agent asked for a bucket inventory refused outright rather than
+        // call the very tool that returns one.
+        out.put("description", descriptionIn(workflow.definition()));
         if (slug == null) {
             out.put("fields", nativeInputs(workflow.definition()));
             return out;
@@ -191,6 +197,26 @@ public class InternalAgentDispatchController {
      * it. A definition that will not parse yields no form rather than an
      * exception — the workflow may still be perfectly runnable with defaults.
      */
+    /**
+     * The description a published workflow carries inside its definition.
+     *
+     * <p>Stored there rather than in a column because the workflows table has
+     * none, and because it then travels through rollout with everything else
+     * the definition holds. Null for anything authored before this existed —
+     * the caller falls back to the title, which is what it used to have.
+     */
+    private String descriptionIn(String definition) {
+        if (definition == null || definition.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode node = objectMapper.readTree(definition).path("description");
+            return node.isTextual() && !node.asText().isBlank() ? node.asText() : null;
+        } catch (Exception ex) {
+            return null;   // unparseable definition is already reported elsewhere
+        }
+    }
+
     private List<Map<String, Object>> nativeInputs(String definition) {
         if (definition == null || definition.isBlank()) {
             return List.of();

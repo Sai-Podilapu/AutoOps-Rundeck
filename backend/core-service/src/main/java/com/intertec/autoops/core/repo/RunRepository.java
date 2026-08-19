@@ -80,6 +80,23 @@ public interface RunRepository extends JpaRepository<Run, Long> {
                                      @Param("finished") Collection<RunStatus> finished,
                                      @Param("succeeded") RunStatus succeeded);
 
+    /**
+     * Target ids with a run in flight.
+     *
+     * <p>Separate from the stats above, which aggregate FINISHED runs only and
+     * so can never say "this one is running now". Read by the console to show a
+     * live badge whatever started the run — an agent, a schedule, the API, or
+     * the Run button — instead of the page guessing from its own last click.
+     */
+    @Query("""
+            select distinct r.targetId from Run r
+            where r.tenantId = :tenantId and r.targetType = :targetType
+              and r.projectId = :projectId and r.status in :active""")
+    List<Long> activeTargets(@Param("tenantId") String tenantId,
+                             @Param("targetType") RunTargetType targetType,
+                             @Param("projectId") Long projectId,
+                             @Param("active") Collection<RunStatus> active);
+
     @Query("""
             select r.targetId as targetId, count(r) as total,
                    sum(case when r.status = :succeeded then 1 else 0 end) as succeeded,

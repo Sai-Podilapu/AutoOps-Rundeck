@@ -15,7 +15,8 @@
     "approvalRequired",
     "runtime",
     "instructions",
-    "tools"
+    "tools",
+    "model"
   ],
   "additionalProperties": false,
   "properties": {
@@ -55,7 +56,7 @@
     },
     "model": {
       "type": "string",
-      "description": "Model id. Omit to inherit the tenant's default provider."
+      "description": "Model id, and it must be one an enabled provider in the receiving workspace actually offers. There is no inheritance and no fallback: resolveForModel refuses a blank model rather than picking whichever provider happened to be first, because that would send a customer's data to a vendor they did not choose."
     },
     "scope": {
       "type": "string",
@@ -152,6 +153,10 @@
             "type": "string",
             "pattern": "^RD-[0-9]{3}-[a-z0-9-]+$",
             "description": "Stable key resolved to the tenant's delivered copy at rollout."
+          },
+          "mutating": {
+            "type": "boolean",
+            "description": "Whether running this changes the customer's state. ABSENT MEANS TRUE, on both sides of the wire: the phased runtime hides mutating tools from the phase that is still gathering evidence, and an unlabelled destructive automation must never be the one that slips through. Nothing else in the platform records this, so the agent's author declares it."
           }
         }
       }

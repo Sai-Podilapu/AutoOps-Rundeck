@@ -129,6 +129,29 @@ public class WorkflowClient {
         }
     }
 
+    /**
+     * Provider library: how many delivered copies each catalog workflow has.
+     *
+     * <p>Degrades to an empty map rather than failing the library page — the
+     * count is decoration next to the catalog itself, and a provider who cannot
+     * see their own templates because workflow-service is briefly down is worse
+     * off than one looking at a stale zero.
+     */
+    public Map<String, Long> rolloutCountsBySource() {
+        try {
+            Map<String, Long> counts = workflowRestClient.get()
+                    .uri("/internal/workflows/rollout-counts")
+                    .header("X-Internal-Token", internalToken)
+                    .retrieve()
+                    .body(new ParameterizedTypeReference<Map<String, Long>>() {
+                    });
+            return counts != null ? counts : Map.of();
+        } catch (Exception ex) {
+            log.warn("Workflow rollout counts unavailable: {}", ex.getMessage());
+            return Map.of();
+        }
+    }
+
     /** SCM import: create, with the user's token still passing the plan gate. */
     public WorkflowView create(String tenantId, String actor, String accessToken, Long projectId,
                                String name, String definition) {

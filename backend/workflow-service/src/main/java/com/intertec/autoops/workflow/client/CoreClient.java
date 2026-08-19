@@ -47,7 +47,10 @@ public class CoreClient {
     }
 
     /** Run aggregates for one workflow, mirroring core's RunService.RunStats. */
-    public record RunStats(Long total, Integer successRate, Instant lastRunAt, Long avgDurationMs) {
+    /** `running` is a live fact, not an aggregate: true while a run is
+     * QUEUED or RUNNING, whatever started it. */
+    public record RunStats(Long total, Integer successRate, Instant lastRunAt,
+                           Long avgDurationMs, boolean running) {
     }
 
     /**
@@ -93,7 +96,8 @@ public class CoreClient {
                 if (targetId != null) {
                     out.put(targetId, new RunStats(asLong(row.get("total")),
                             asInt(row.get("successRate")), asInstant(row.get("lastRunAt")),
-                            asLong(row.get("avgDurationMs"))));
+                            asLong(row.get("avgDurationMs")),
+                            Boolean.TRUE.equals(row.get("running"))));
                 }
             }
             return out;

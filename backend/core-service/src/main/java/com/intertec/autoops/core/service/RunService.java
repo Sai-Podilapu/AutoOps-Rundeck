@@ -138,7 +138,13 @@ public class RunService {
     public List<DifyWorkflowService.InputField> inputFormFor(String tenantId, Long workflowId) {
         WorkflowClient.WorkflowView workflow = workflowClient.require(tenantId, workflowId);
         String slug = difyWorkflows.slugIn(workflow.definition());
-        return slug == null ? List.of() : difyWorkflows.inputsFor(slug);
+        // A native workflow declares its own inputs[]. Returning an empty list
+        // for one — as this did — left the console with no form to show, so a
+        // tenant pressed Run, nothing was collected, and the run was refused
+        // for missing inputs it was never given the chance to supply.
+        return slug == null
+                ? nativeInputs.formFor(workflow.definition())
+                : difyWorkflows.inputsFor(slug);
     }
 
     /**
@@ -356,6 +362,18 @@ public class RunService {
             Long avg = row.getAvgDurationMs() != null ? Math.round(row.getAvgDurationMs()) : null;
             return new RunStats(row.getTotal(), rate, row.getLastRunAt(), avg);
         }
+    }
+
+    /** In-flight statuses. QUEUED counts: a run waiting on the pool has been
+     * started and the person who started it should see that, not a row that
+     * looks untouched. */
+    private static final Set<RunStatus> ACTIVE =
+            EnumSet.of(RunStatus.QUEUED, RunStatus.RUNNING);
+
+    /** Targets in this project with a run in flight right now. */
+    @Transactional(readOnly = true)
+    public Set<Long> activeTargets(String tenantId, RunTargetType targetType, Long projectId) {
+        return Set.copyOf(runRepository.activeTargets(tenantId, targetType, projectId, ACTIVE));
     }
 
     @Transactional(readOnly = true)

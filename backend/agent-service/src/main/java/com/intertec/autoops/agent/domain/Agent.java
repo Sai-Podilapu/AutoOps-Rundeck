@@ -63,10 +63,33 @@ public class Agent {
     @Column(length = 128)
     private String model;
 
+    /**
+     * Which module in the Python runtime's registry runs this agent.
+     *
+     * <p>NULL means the agent is a JSON persona — {@link #instructions} below —
+     * and runs on the single-phase compatibility graph, which is every agent
+     * that exists today. A non-null ref means the persona, the prompts and the
+     * phase graph live in the runtime's image and were never copied into this
+     * tenant's database at all.
+     */
+    @Column(name = "graph_ref", length = 128)
+    private String graphRef;
+
+    /** The version rolled out to this tenant; see the V5 migration. */
+    @Column(name = "graph_version", length = 32)
+    private String graphVersion;
+
     @Column(columnDefinition = "MEDIUMTEXT")
     private String instructions;
 
-    /** JSON allow-list: {@code [{"type":"JOB|WORKFLOW","id":N}]}. */
+    /**
+     * JSON allow-list: {@code [{"type":"JOB|WORKFLOW","id":N,"mutating":bool}]}.
+     *
+     * <p>{@code mutating} is optional and defaults to TRUE when absent — see
+     * {@code AgentToolbox.mutating}. It is declared by whoever authored the
+     * agent because nothing else in the platform records whether a saved
+     * automation changes state.
+     */
     @Column(columnDefinition = "MEDIUMTEXT")
     private String tools;
 
@@ -151,6 +174,22 @@ public class Agent {
 
     public void setModel(String model) {
         this.model = model;
+    }
+
+    public String getGraphRef() {
+        return graphRef;
+    }
+
+    public void setGraphRef(String graphRef) {
+        this.graphRef = graphRef;
+    }
+
+    public String getGraphVersion() {
+        return graphVersion;
+    }
+
+    public void setGraphVersion(String graphVersion) {
+        this.graphVersion = graphVersion;
     }
 
     public String getInstructions() {

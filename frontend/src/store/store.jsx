@@ -7,16 +7,36 @@ import React, {
 } from "react";
 import { api, tokenStore } from "../lib/api";
 
-const KEY = "autoops_prefs_v1";
-// Email of the account the persisted prefs belong to — account-scoped state
-// (org, workflow drafts) is reset when a different user signs in.
-const OWNER_KEY = "autoops_prefs_owner";
+const LEGACY_KEY = "autoops_prefs_v1";
+// Was: the email that the ONE shared prefs bucket belonged to, checked on sign-in
+// so a different account did not inherit it. That worked only while the browser
+// held a single session. With per-tab sessions two accounts are signed in at
+// once, and this key ping-ponged between them — every refresh saw a mismatch and
+// wiped the other account's prefs. Prefs are keyed per account now, so there is
+// nothing to compare and nothing to reset. Kept only to migrate the old bucket.
+const LEGACY_OWNER_KEY = "autoops_prefs_owner";
 const DEFAULT_ORG = { name: "Your workspace", domain: "" };
 const StoreContext = createContext(null);
 
-const load = () => {
+/** One bucket per account, so two signed-in accounts cannot overwrite each other. */
+const prefsKey = (email) => `${LEGACY_KEY}:${String(email).trim().toLowerCase()}`;
+
+const loadPrefs = (email) => {
+  if (!email) return {};
   try {
-    return JSON.parse(localStorage.getItem(KEY)) || {};
+    const own = localStorage.getItem(prefsKey(email));
+    if (own) return JSON.parse(own) || {};
+    // Adopt the pre-namespacing bucket, but ONLY if it was this account's —
+    // that is exactly what LEGACY_OWNER_KEY recorded. Handing it to anyone else
+    // is the leak the old wipe existed to prevent.
+    if (localStorage.getItem(LEGACY_OWNER_KEY) === email) {
+      const legacy = JSON.parse(localStorage.getItem(LEGACY_KEY)) || {};
+      localStorage.setItem(prefsKey(email), JSON.stringify(legacy));
+      localStorage.removeItem(LEGACY_KEY);
+      localStorage.removeItem(LEGACY_OWNER_KEY);
+      return legacy;
+    }
+    return {};
   } catch {
     return {};
   }
@@ -142,7 +162,6 @@ function Toaster({ toasts }) {
 }
 
 export function StoreProvider({ children }) {
-  const persisted = load();
   const [booting, setBooting] = useState(true);
   const [session, setSession] = useState({
     authed: false,
@@ -162,25 +181,44 @@ export function StoreProvider({ children }) {
   // they were per-browser and read by nothing; they are per-member rows in
   // core-service now and genuinely filter the inbox, so the local copy is gone
   // rather than kept as a second, disagreeing source of truth.
-  const [designs, setDesigns] = useState(persisted.designs || {});
-  const [org, setOrgState] = useState(persisted.org || DEFAULT_ORG);
+  // Owner travels WITH the values in one state object rather than beside them.
+  // Two effects (hydrate, then persist) that each keyed off the email raced on
+  // the commit where the email first arrived: the persist effect saw the old
+  // empty values, because setState from the hydrate effect does not apply until
+  // the next render — so the first act after sign-in was to write blank prefs
+  // over the ones on disk. With the owner inside the state, the persist effect
+  // has a stale-read it can detect and skip.
+  const [prefs, setPrefs] = useState({
+    owner: null,
+    designs: {},
+    org: DEFAULT_ORG,
+  });
+  const designs = prefs.designs;
+  const org = prefs.org;
   const [toasts, setToasts] = useState([]);
 
-  useEffect(() => {
-    localStorage.setItem(KEY, JSON.stringify({ designs, org }));
-  }, [designs, org]);
+  const prefsOwner = user?.email || null;
 
-  // Account-scoped persisted state must not leak between accounts: when a
-  // DIFFERENT user signs in (fresh sign-up, other account on this machine),
-  // drop the previous account's org name/domain and workflow drafts.
+  // Read this account's prefs once its identity is known.
   useEffect(() => {
-    if (!user?.email) return;
-    if (localStorage.getItem(OWNER_KEY) !== user.email) {
-      setOrgState(DEFAULT_ORG);
-      setDesigns({});
-      localStorage.setItem(OWNER_KEY, user.email);
-    }
-  }, [user?.email]);
+    if (!prefsOwner || prefs.owner === prefsOwner) return;
+    const loaded = loadPrefs(prefsOwner);
+    setPrefs({
+      owner: prefsOwner,
+      designs: loaded.designs || {},
+      org: loaded.org || DEFAULT_ORG,
+    });
+  }, [prefsOwner, prefs.owner]);
+
+  // Write only under the account these values were actually read for. The
+  // owner check is what makes the pre-hydration pass a no-op.
+  useEffect(() => {
+    if (!prefs.owner || prefs.owner !== prefsOwner) return;
+    localStorage.setItem(
+      prefsKey(prefs.owner),
+      JSON.stringify({ designs: prefs.designs, org: prefs.org }),
+    );
+  }, [prefs, prefsOwner]);
 
   const refreshProjects = useCallback(async () => {
     try {
@@ -379,8 +417,11 @@ export function StoreProvider({ children }) {
     setWorkspace(null);
     setMembers([]);
     setMembersError(null);
-    // Don't show this account's org identity to whoever signs in next.
-    setOrgState(DEFAULT_ORG);
+    // Don't show this account's org identity to whoever signs in next. Clearing
+    // the owner too is what matters: it stops the persist effect writing these
+    // reset values over the signed-out account's stored prefs, which would
+    // delete them rather than just hide them.
+    setPrefs({ owner: null, designs: {}, org: DEFAULT_ORG });
   }, []);
 
   const startImpersonation = useCallback(
@@ -481,12 +522,15 @@ export function StoreProvider({ children }) {
   }, []);
 
   const setOrg = useCallback(
-    (o) => setOrgState((prev) => ({ ...prev, ...o })),
+    (o) => setPrefs((p) => ({ ...p, org: { ...p.org, ...o } })),
     [],
   );
   const saveWorkflowDesign = useCallback(
     (id, data) =>
-      setDesigns((d) => ({ ...d, [id]: { ...data, savedAt: Date.now() } })),
+      setPrefs((p) => ({
+        ...p,
+        designs: { ...p.designs, [id]: { ...data, savedAt: Date.now() } },
+      })),
     [],
   );
   const getWorkflowDesign = useCallback((id) => designs[id] || null, [designs]);

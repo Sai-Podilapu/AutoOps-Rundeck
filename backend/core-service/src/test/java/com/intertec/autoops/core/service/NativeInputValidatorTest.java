@@ -167,4 +167,57 @@ class NativeInputValidatorTest {
         assertThat(validator.declaresForm(DEFINITION)).isTrue();
         assertThat(validator.declaresForm("{\"nodes\":[]}")).isFalse();
     }
+
+    // ---- the form the tenant console renders -------------------------------
+
+    @Test
+    void offersEveryDeclaredFieldToTheConsole() {
+        // Returning nothing here is what made a tenant press Run, supply
+        // nothing, and be refused for inputs they were never shown.
+        assertThat(validator.formFor(DEFINITION))
+                .extracting(f -> f.variable())
+                .containsExactly("TargetHost", "DiskWarnPercent", "Execute",
+                        "ApprovalReference", "OutputFormat");
+    }
+
+    @Test
+    void theFormCarriesWhatTheFieldNeedsToRender() {
+        var host = validator.formFor(DEFINITION).get(0);
+        assertThat(host.label()).isEqualTo("Target host");
+        assertThat(host.required()).isTrue();
+
+        var format = validator.formFor(DEFINITION).get(4);
+        assertThat(format.options()).containsExactly("Console", "JSON");
+        assertThat(format.defaultValue()).isEqualTo("JSON");
+    }
+
+    @Test
+    void everyRequiredFieldTheValidatorEnforcesIsOnTheForm() {
+        // If these two ever drift, the operator is asked for one thing and
+        // judged on another.
+        assertThat(validator.formFor(DEFINITION))
+                .filteredOn(f -> f.required())
+                .extracting(f -> f.variable())
+                .containsExactly("TargetHost", "DiskWarnPercent", "OutputFormat");
+    }
+
+    @Test
+    void aWorkflowWithNoInputsOffersAnEmptyForm() {
+        assertThat(validator.formFor("{\"nodes\":[]}")).isEmpty();
+    }
+
+    @Test
+    void anOptionalFieldLeftBlankStillAppearsAsEmpty() {
+        // Omitting it entirely left its {{placeholder}} unresolved, and the
+        // step was then refused for "missing" values the form called optional.
+        Map<String, Object> clean = validate(answers("TargetHost", "app-01"));
+        assertThat(clean).containsEntry("ApprovalReference", "");
+    }
+
+    @Test
+    void aRequiredFieldLeftBlankIsStillAnError_notAnEmptyValue() {
+        assertThatThrownBy(() -> validate(answers()))
+                .isInstanceOf(CoreException.class)
+                .hasMessageContaining("Target host");
+    }
 }

@@ -130,5 +130,22 @@
       "retries": 0,
       "continueOnError": false
     }
+  ],
+  "requires": [
+    {
+      "kind": "cloud_connection",
+      "platform": "AWS",
+      "permissions": [
+        "ec2:DescribeVolumes",
+        "ec2:CreateSnapshot",
+        "ec2:DeleteVolume"
+      ],
+      "customerText": "An AWS account this can inspect and clean up unused disks in. If you have already connected one, we will use it."
+    },
+    {
+      "kind": "runtime",
+      "runtime": "powershell",
+      "customerText": "This automation runs a PowerShell script. Your workspace cannot run PowerShell yet, so it is published for review but cannot be started."
+    }
   ]
 }

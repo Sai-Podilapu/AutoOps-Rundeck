@@ -1,0 +1,10 @@
+# Local virtualenv. The root .gitignore covers __pycache__ and *.pyc but this
+# is the only Python service in the repo, so its build artefacts are named here
+# rather than added to a root file every other service ignores.
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/

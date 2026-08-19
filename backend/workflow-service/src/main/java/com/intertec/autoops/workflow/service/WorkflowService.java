@@ -230,6 +230,20 @@ public class WorkflowService {
         return counts;
     }
 
+    /**
+     * Delivered copies per catalog item, keyed by source id as a STRING —
+     * JSON object keys are strings, and returning Long keys here only to have
+     * Jackson stringify them anyway invites a caller to look one up with a
+     * number and miss.
+     */
+    public Map<String, Long> rolloutCountsBySource() {
+        Map<String, Long> counts = new HashMap<>();
+        for (Object[] row : workflowRepository.countGroupedBySourceId()) {
+            counts.put(String.valueOf(row[0]), ((Number) row[1]).longValue());
+        }
+        return counts;
+    }
+
     // ------------------------------------------------------------------
 
     private long automationCount(String tenantId) {

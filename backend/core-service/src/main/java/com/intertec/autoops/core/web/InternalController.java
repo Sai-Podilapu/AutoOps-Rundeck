@@ -102,15 +102,28 @@ public class InternalController {
                                               @RequestParam String targetType,
                                               @RequestParam Long projectId) {
         RunTargetType type = parseTargetType(targetType);
-        return runService.statsForProject(tenantId, type, projectId).entrySet().stream()
-                .map(entry -> {
-                    RunService.RunStats stats = entry.getValue();
+        // Read once for the whole project rather than per row: "is this
+        // running" is a different question from the finished-run aggregate and
+        // needs its own query, but not one query per workflow.
+        java.util.Set<Long> active = runService.activeTargets(tenantId, type, projectId);
+        java.util.Map<Long, RunService.RunStats> stats =
+                runService.statsForProject(tenantId, type, projectId);
+
+        // A target that has NEVER finished a run still has to appear when it is
+        // running now, or the first run of a new workflow shows nothing at all.
+        java.util.Set<Long> targets = new java.util.LinkedHashSet<>(stats.keySet());
+        targets.addAll(active);
+
+        return targets.stream()
+                .map(targetId -> {
+                    RunService.RunStats s = stats.get(targetId);
                     Map<String, Object> row = new HashMap<>();
-                    row.put("targetId", entry.getKey());
-                    row.put("total", stats.total());
-                    row.put("successRate", stats.successRate());
-                    row.put("lastRunAt", stats.lastRunAt());
-                    row.put("avgDurationMs", stats.avgDurationMs());
+                    row.put("targetId", targetId);
+                    row.put("total", s != null ? s.total() : 0L);
+                    row.put("successRate", s != null ? s.successRate() : null);
+                    row.put("lastRunAt", s != null ? s.lastRunAt() : null);
+                    row.put("avgDurationMs", s != null ? s.avgDurationMs() : null);
+                    row.put("running", active.contains(targetId));
                     return row;
                 })
                 .toList();

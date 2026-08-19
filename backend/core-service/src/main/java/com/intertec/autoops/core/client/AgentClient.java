@@ -36,6 +36,27 @@ public class AgentClient {
         this.internalToken = properties.getAgent().getInternalToken();
     }
 
+    /**
+     * Provider library: how many delivered copies each catalog agent has.
+     *
+     * <p>Empty map on failure rather than a throw — see the matching method on
+     * {@link WorkflowClient}. A count is decoration; the catalog is not.
+     */
+    public Map<String, Long> rolloutCountsBySource() {
+        try {
+            Map<String, Long> counts = agentRestClient.get()
+                    .uri("/internal/agents/rollout-counts")
+                    .header("X-Internal-Token", internalToken)
+                    .retrieve()
+                    .body(new org.springframework.core.ParameterizedTypeReference<Map<String, Long>>() {
+                    });
+            return counts != null ? counts : Map.of();
+        } catch (Exception ex) {
+            log.warn("Agent rollout counts unavailable: {}", ex.getMessage());
+            return Map.of();
+        }
+    }
+
     /** What agent-service echoes back — never the persona. */
     public record RolledOutAgent(Long id, String name, int toolCount) {
     }
@@ -45,16 +66,26 @@ public class AgentClient {
      * caller must have already proved the PROVIDER role AND that the project
      * belongs to the tenant.
      */
+    /**
+     * @param instructions the persona, for a JSON-authored agent. Null for a
+     *                     Python one, whose persona never leaves the runtime's
+     *                     image.
+     * @param graphRef     the module in agent-runtime's registry, for a
+     *                     Python-authored agent. Null for a JSON one.
+     */
     public RolledOutAgent rollOut(String tenantId, String actor, String accessToken,
                                   Long projectId, Long sourceId, String name, String description,
-                                  String model, String instructions, String tools) {
-        // HashMap, not Map.of: description/model/instructions/tools are all
-        // legitimately null for a minimal agent, and Map.of rejects nulls.
+                                  String model, String instructions, String graphRef,
+                                  String graphVersion, String tools) {
+        // HashMap, not Map.of: every field below is legitimately null for one
+        // agent shape or the other, and Map.of rejects nulls.
         Map<String, Object> body = new HashMap<>();
         body.put("name", name);
         body.put("description", description);
         body.put("model", model);
         body.put("instructions", instructions);
+        body.put("graphRef", graphRef);
+        body.put("graphVersion", graphVersion);
         body.put("tools", tools);
         try {
             return agentRestClient.post()

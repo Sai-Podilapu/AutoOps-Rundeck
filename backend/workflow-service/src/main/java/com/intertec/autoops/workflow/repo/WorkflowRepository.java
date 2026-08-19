@@ -13,6 +13,21 @@ public interface WorkflowRepository extends JpaRepository<Workflow, Long> {
     @Query("SELECT w.tenantId, COUNT(w) FROM Workflow w GROUP BY w.tenantId")
     List<Object[]> countGroupedByTenant();
 
+    /**
+     * How many delivered copies each catalog item currently has, in one query.
+     *
+     * <p>Counts LIVE rows rather than rollout events, so revoking a delivery
+     * takes the number back down — a stored counter on the catalog item could
+     * only ever go up, and would keep claiming a customer holds something they
+     * no longer do.
+     *
+     * <p>{@code source_id IS NOT NULL} excludes tenant-authored workflows,
+     * which came from no catalog item.
+     */
+    @Query("SELECT w.sourceId, COUNT(w) FROM Workflow w WHERE w.sourceId IS NOT NULL "
+            + "GROUP BY w.sourceId")
+    List<Object[]> countGroupedBySourceId();
+
     List<Workflow> findByProjectIdAndTenantIdOrderByCreatedAtDesc(Long projectId, String tenantId);
 
     /** Tenant isolation: every by-id lookup is scoped to the caller's tenant. */

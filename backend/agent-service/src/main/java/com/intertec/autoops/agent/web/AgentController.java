@@ -80,6 +80,25 @@ public class AgentController {
         return response(jwt, agent);
     }
 
+    public record ModelRequest(String model) {
+    }
+
+    /**
+     * Point an agent at a different model. Separate from the general update
+     * because it is the one change a tenant may make to a provider-managed
+     * agent: the persona and the tool allow-list stay sealed, but the vendor
+     * processing their data is theirs to choose.
+     */
+    @PostMapping("/api/agents/{id}/model")
+    public AgentResponse setModel(@PathVariable Long id,
+                                  @RequestBody ModelRequest request,
+                                  @AuthenticationPrincipal Jwt jwt) {
+        Agent agent = agentService.setModel(tenant(jwt), jwt.getTokenValue(), id,
+                request.model());
+        audit("AGENT_UPDATED", jwt, agent);
+        return response(jwt, agent);
+    }
+
     @PostMapping("/api/agents/{id}/enable")
     public AgentResponse enable(@PathVariable Long id, @AuthenticationPrincipal Jwt jwt) {
         Agent agent = agentService.setEnabled(tenant(jwt), jwt.getTokenValue(), id, true);

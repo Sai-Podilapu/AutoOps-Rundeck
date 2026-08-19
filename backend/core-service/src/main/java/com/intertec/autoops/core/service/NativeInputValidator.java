@@ -82,7 +82,16 @@ public class NativeInputValidator {
                 if (!field.has("default")) {
                     if (isRequired(field, answers)) {
                         problems.add("'" + label(field) + "' is required");
+                        continue;
                     }
+                    // An optional field nobody filled in still has to APPEAR in
+                    // the result. Leaving it out entirely means its
+                    // {{placeholder}} survives substitution and the step is
+                    // refused for "missing" values the form said were optional
+                    // — which is exactly what an operator would call a bug.
+                    // Empty is the answer: `-ProfileName ''` is what "use the
+                    // host's IAM role" looks like on a command line.
+                    clean.put(name, "");
                     continue;
                 }
                 raw = objectMapper.convertValue(field.get("default"), Object.class);
@@ -104,6 +113,37 @@ public class NativeInputValidator {
     /** True when a run of this definition needs its inputs checked here. */
     public boolean declaresForm(String definition) {
         return !declaredFields(definition).isEmpty();
+    }
+
+    /**
+     * The form the console renders before a native workflow runs, in the same
+     * shape a Dify-backed one produces — so the console asks the person the
+     * same way whichever engine is behind the automation.
+     *
+     * <p>Every field the validator will later enforce is offered here. If the
+     * two ever disagree the operator is asked for one thing and judged on
+     * another, so both read the same {@code inputs[]} rather than keeping
+     * separate ideas of the contract.
+     */
+    public List<DifyWorkflowService.InputField> formFor(String definition) {
+        List<DifyWorkflowService.InputField> form = new ArrayList<>();
+        for (JsonNode field : declaredFields(definition)) {
+            List<String> options = new ArrayList<>();
+            if (field.path("options").isArray()) {
+                field.get("options").forEach(option -> options.add(option.asText()));
+            }
+            JsonNode defaultValue = field.get("default");
+            form.add(new DifyWorkflowService.InputField(
+                    field.path("variable").asText(),
+                    label(field),
+                    field.path("type").asText("string"),
+                    field.path("required").asBoolean(false),
+                    defaultValue == null || defaultValue.isNull()
+                            ? null : defaultValue.asText(),
+                    options,
+                    null));
+        }
+        return form;
     }
 
     private List<JsonNode> declaredFields(String definition) {

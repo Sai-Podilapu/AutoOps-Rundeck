@@ -50,6 +50,19 @@ public class StepExecutionService {
                             Integer exitCode, long durationMs, String executor) {
     }
 
+    /**
+     * Step types this deployment can actually execute, sorted for a stable
+     * answer.
+     *
+     * <p>Derived from the registered beans, never declared. That matters
+     * because the readiness check shown to a customer says whether an
+     * automation can run at all — an answer taken from a stale list would tell
+     * them PowerShell works the day before it does, or long after it does.
+     */
+    public java.util.Set<String> supportedTypes() {
+        return new java.util.TreeSet<>(runnersByType.keySet());
+    }
+
     public Execution execute(StepRunner.StepCommand rawCommand) {
         String type = rawCommand.stepType() == null ? ""
                 : rawCommand.stepType().toLowerCase(Locale.ROOT);
@@ -58,10 +71,12 @@ public class StepExecutionService {
         StepRunner.StepResult result;
         String executor = runner != null ? runner.getClass().getSimpleName() : "none";
         if (runner == null) {
+            // Listed from the registry rather than a literal: a hard-coded list
+            // goes stale the first time a runner is added or removed, and this
+            // message is what an operator reads when something will not run.
             result = StepRunner.StepResult.failed(
-                    "No executor for step type '" + type + "' yet. Supported today: command, "
-                            + "agent, script, pyscript, ssh, rest, terraform, kubernetes, "
-                            + "awslambda, azurefn, test.",
+                    "No executor for step type '" + type + "' yet. Supported today: "
+                            + String.join(", ", supportedTypes()) + ".",
                     null, null);
         } else {
             // One workspace per step: its own directory, its own OS user where

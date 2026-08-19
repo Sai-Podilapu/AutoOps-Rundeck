@@ -84,7 +84,8 @@ public class AgentService {
     @Transactional
     public Agent rollOut(String tenantId, String actor, String accessToken, Long projectId,
                          Long sourceId, String name, String description, String model,
-                         String instructions, String tools) {
+                         String instructions, String graphRef, String graphVersion,
+                         String tools) {
         // One delivered copy per catalog item per project. The name check in
         // doCreate stops the obvious repeat, but only while the names still
         // match: rename the catalog item, roll out again, and it lets a second
@@ -104,6 +105,11 @@ public class AgentService {
                 model, instructions, tools, false);
         agent.setOrigin(Agent.Origin.PROVIDER);
         agent.setSourceId(sourceId);
+        // Set only on the rollout path. A customer cannot point an agent at a
+        // graph module themselves — the module is the provider's product, and
+        // the only legitimate way to acquire one is to be given it.
+        agent.setGraphRef(blankToNull(graphRef));
+        agent.setGraphVersion(blankToNull(graphVersion));
         Agent saved = agentRepository.save(agent);
         log.info("Rolled catalog agent {} out to tenant {} project {} as agent {}",
                 sourceId, tenantId, projectId, saved.getId());
@@ -220,6 +226,37 @@ public class AgentService {
      * and a customer must always be able to stop an agent acting in their own
      * workspace, whoever built it.
      */
+    /**
+     * Point a delivered agent at a different model.
+     *
+     * <p><b>The one field a tenant may change on a provider-managed agent.</b>
+     * Which LLM processes a customer's infrastructure data is their decision —
+     * cost, data residency, and which vendor they are willing to send an
+     * inventory of their servers to. Sealing that alongside the persona would
+     * mean the provider picks a customer's AI vendor for them.
+     *
+     * <p>Everything that makes the agent what it is stays sealed: the persona
+     * is still unreadable and the tool allow-list still cannot be widened.
+     * The model is operational configuration, not design.
+     *
+     * <p>The id is not validated here. {@code ModelProviderService
+     * .resolveForModel} already refuses a model no enabled connection in that
+     * workspace offers, and duplicating that check would put a second, weaker
+     * copy of the rule in a service that cannot see the tenant's providers.
+     */
+    @Transactional
+    public Agent setModel(String tenantId, String accessToken, Long id, String model) {
+        gate.requireActive(accessToken);
+        Agent agent = get(tenantId, id);
+        if (model == null || model.isBlank()) {
+            throw AgentException.badRequest("model_required",
+                    "Choose a model — an agent with none cannot resolve a credential to run on");
+        }
+        agent.setModel(model.trim());
+        log.info("Tenant {} pointed agent {} at model {}", tenantId, id, model.trim());
+        return agentRepository.save(agent);
+    }
+
     private void requireOwner(Agent agent, boolean callerIsProvider, String verb) {
         if (agent.isProviderAuthored() && !callerIsProvider) {
             throw AgentException.forbidden("provider_managed",
@@ -232,6 +269,21 @@ public class AgentService {
     @Transactional(readOnly = true)
     public long countForTenant(String tenantId) {
         return agentRepository.countByTenantId(tenantId);
+    }
+
+    /**
+     * Delivered copies per catalog item, keyed by source id as a STRING — JSON
+     * object keys are strings, and returning Long keys only for Jackson to
+     * stringify them anyway invites a caller to look one up with a number and
+     * silently miss.
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Long> rolloutCountsBySource() {
+        Map<String, Long> counts = new java.util.HashMap<>();
+        for (Object[] row : agentRepository.countGroupedBySourceId()) {
+            counts.put(String.valueOf(row[0]), ((Number) row[1]).longValue());
+        }
+        return counts;
     }
 
     /**

@@ -1,0 +1,39 @@
+{
+  "taskId": "RD-137",
+  "domain": "AWS",
+  "category": "AWS",
+  "title": "Security Group Ingress Audit",
+  "description": "Reports every security group with an ingress rule open to 0.0.0.0/0 or ::/0, which ports it exposes, and whether the group is attached to anything. Read-only: it revokes no rule.",
+  "runtime": "python",
+  "inputs": [
+    {
+      "variable": "Region",
+      "label": "AWS region",
+      "type": "string",
+      "required": true,
+      "pattern": "^[a-z]{2}(-gov)?-[a-z]+-[0-9]$",
+      "default": "us-east-1",
+      "placeholder": "us-east-1",
+      "help": "One region per run. Bucket and IAM listings are account-wide; EC2 resources are per-region."
+    }
+  ],
+  "nodes": [
+    {
+      "type": "pyscript",
+      "label": "Audit security group ingress",
+      "value": "import json\nimport boto3\nfrom botocore.exceptions import ClientError\n\n# A step with no cloud integration bound reaches signing time and raises\n# NoCredentialsError as a bare traceback. The agent would then file that\n# traceback as an observation. Fail here instead, with a sentence that names\n# what is missing and who fixes it.\n_creds = boto3.session.Session().get_credentials()\nif _creds is None:\n    print(json.dumps({\"error\": \"No AWS credentials reached this step. Bind an AWS cloud \"\n                               \"integration to this automation under Cloud Integrations, \"\n                               \"and make sure it is available to this project.\"}))\n    raise SystemExit(1)\n\nREGION = \"{{Region}}\"\nec2 = boto3.session.Session(region_name=REGION).client(\"ec2\")\n\nOPEN = (\"0.0.0.0/0\", \"::/0\")\n\n\ndef described(perm):\n    \"\"\"A port range as a human reads it, not as the API models it.\"\"\"\n    if perm.get(\"IpProtocol\") == \"-1\":\n        return \"ALL traffic\"\n    lo, hi = perm.get(\"FromPort\"), perm.get(\"ToPort\")\n    proto = perm.get(\"IpProtocol\", \"?\")\n    if lo is None:\n        return proto\n    return proto + \" \" + (str(lo) if lo == hi else str(lo) + \"-\" + str(hi))\n\n\nout = {\"region\": REGION, \"groups\": [], \"errors\": []}\ntry:\n    groups = [g for page in ec2.get_paginator(\"describe_security_groups\").paginate()\n              for g in page[\"SecurityGroups\"]]\nexcept ClientError as e:\n    print(json.dumps({\"error\": \"could not describe security groups: \" + str(e)}))\n    raise SystemExit(1)\n\n# Which groups are actually attached to something. A wide-open rule on a group\n# nobody uses is a different severity from one in front of a live instance, and\n# the agent cannot tell them apart without this.\nattached = set()\ntry:\n    for page in ec2.get_paginator(\"describe_network_interfaces\").paginate():\n        for eni in page[\"NetworkInterfaces\"]:\n            for g in eni.get(\"Groups\", []):\n                attached.add(g[\"GroupId\"])\nexcept ClientError as e:\n    out[\"errors\"].append({\"step\": \"describe_network_interfaces\",\n                          \"error\": e.response[\"Error\"][\"Code\"]})\n    attached = None\n\nfor g in groups:\n    exposures = []\n    for perm in g.get(\"IpPermissions\", []):\n        cidrs = [r.get(\"CidrIp\") for r in perm.get(\"IpRanges\", [])]\n        cidrs += [r.get(\"CidrIpv6\") for r in perm.get(\"Ipv6Ranges\", [])]\n        for cidr in cidrs:\n            if cidr in OPEN:\n                exposures.append({\"port\": described(perm), \"cidr\": cidr})\n    if exposures:\n        out[\"groups\"].append({\n            \"groupId\": g[\"GroupId\"],\n            \"groupName\": g.get(\"GroupName\"),\n            \"vpcId\": g.get(\"VpcId\"),\n            \"description\": g.get(\"Description\"),\n            \"inUse\": None if attached is None else (g[\"GroupId\"] in attached),\n            \"openTo\": exposures,\n        })\n\nout[\"summary\"] = {\n    \"groupsScanned\": len(groups),\n    \"groupsOpenToInternet\": len(out[\"groups\"]),\n    \"attachmentKnown\": attached is not None,\n}\nprint(json.dumps(out, indent=2))"
+    }
+  ],
+  "requires": [
+    {
+      "kind": "cloud_connection",
+      "platform": "AWS",
+      "customerText": "An AWS cloud integration available to this project, with read-only permission for: ec2:DescribeSecurityGroups, ec2:DescribeNetworkInterfaces"
+    },
+    {
+      "kind": "runtime",
+      "runtime": "python",
+      "customerText": "The job runner executes Python steps; boto3 ships in the image."
+    }
+  ]
+}

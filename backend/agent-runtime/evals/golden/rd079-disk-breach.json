@@ -1,0 +1,136 @@
+{
+  "name": "RD-079 — /var breaches the disk warning",
+  "_why": [
+    "The canonical shape of a read-only investigation: triage decides the work,",
+    "gather collects once, hypothesize concludes with no tools, report cites.",
+    "It pins four things that are ours rather than the model's — that GATHER is",
+    "never offered a mutating tool, that HYPOTHESIZE cannot re-collect, that a",
+    "cited figure survives the audit, and that the run ends SUCCEEDED with no",
+    "UNVERIFIED banner."
+  ],
+  "agent": {
+    "ref": "linux.server_health_check",
+    "version": "1.0.0",
+    "model": "claude-sonnet-5",
+    "vendor": "ANTHROPIC"
+  },
+  "tools": [
+    {
+      "name": "workflow_3",
+      "description": "Run the workflow \"Linux Server Health Check\". Returns the run outcome and log.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "TargetHost": { "type": "string", "description": "Target host" },
+          "DiskWarnPercent": { "type": "number", "description": "Disk warning threshold (%)" }
+        },
+        "required": ["TargetHost"]
+      },
+      "mutating": false
+    },
+    {
+      "name": "job_9",
+      "description": "Run the automation job \"Purge log archives\".",
+      "input_schema": { "type": "object", "properties": {} },
+      "mutating": true
+    }
+  ],
+  "steps": [
+    {
+      "event": {
+        "kind": "START",
+        "input": "Health check on app-prod-01.customer.local, disk warning at 85%."
+      },
+      "script": [
+        {
+          "type": "structured",
+          "schema": "TriageOut",
+          "value": {
+            "restated": "Collect health figures for app-prod-01 and compare against an 85% disk warning.",
+            "observations_needed": ["disk usage per filesystem", "memory", "load average"],
+            "can_proceed": true,
+            "reason": ""
+          }
+        },
+        {
+          "type": "reply",
+          "text": "Collecting the figures for app-prod-01.",
+          "tool_calls": [
+            {
+              "name": "workflow_3",
+              "args": { "TargetHost": "app-prod-01.customer.local", "DiskWarnPercent": 85 },
+              "id": "toolu_01"
+            }
+          ],
+          "input_tokens": 820,
+          "output_tokens": 74
+        }
+      ],
+      "expect": {
+        "directive": "CALL_TOOLS",
+        "phase": "GATHER",
+        "tool_calls": ["workflow_3"]
+      }
+    },
+    {
+      "event": {
+        "kind": "TOOL_RESULTS",
+        "results": [
+          {
+            "call_id": "toolu_01",
+            "ok": true,
+            "evidence_id": 21,
+            "content": "load_1m=2.1 load_5m=1.8 load_15m=1.4 cpu_cores=4\nmem_used_pct=61\n/ 42%\n/var 94%\n/home 84%\nswap_used_pct=0"
+          }
+        ]
+      },
+      "script": [
+        {
+          "type": "reply",
+          "text": "I have everything I need for this host.",
+          "input_tokens": 1140,
+          "output_tokens": 18
+        },
+        {
+          "type": "structured",
+          "schema": "HypothesisOut",
+          "value": {
+            "findings": [
+              {
+                "summary": "/var is at 94%, above the 85% warning threshold.",
+                "severity": "critical",
+                "cites": [21]
+              },
+              {
+                "summary": "/home is at 84%, one point below the warning threshold.",
+                "severity": "warning",
+                "cites": [21]
+              },
+              {
+                "summary": "Load is 2.1 across 4 cores, which is healthy.",
+                "severity": "info",
+                "cites": [21]
+              }
+            ],
+            "need_more": false,
+            "collect": ""
+          }
+        },
+        {
+          "type": "reply",
+          "text": "**/var is at 94% against an 85% warning** [e:21].\n\n- /home is at 84% [e:21], one point below the threshold.\n- / is at 42% [e:21] and memory is at 61% [e:21].\n- Load is 2.1 across 4 cores [e:21], which is healthy.\n\nThe check does not break /var usage down by directory, so the cause needs a follow-up.",
+          "input_tokens": 1310,
+          "output_tokens": 132
+        }
+      ],
+      "expect": {
+        "directive": "FINISH",
+        "phase": "DONE",
+        "tool_calls": [],
+        "citations": [21],
+        "has_uncited": false,
+        "output_contains": ["94%", "[e:21]"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+[project]
+name = "autoops-agent-runtime"
+version = "0.1.0"
+description = "The reasoning half of AutoOps agents: a stateless (state, event) -> state' reducer."
+requires-python = ">=3.12"
+
+# Pinned rather than floated. This service decides what runs against a
+# customer's production infrastructure, and a minor bump in a graph or prompt
+# library that quietly changes tool-calling behaviour is not something we want
+# arriving through an unattended rebuild.
+dependencies = [
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.34.0",
+    "pydantic==2.10.4",
+    "pydantic-settings==2.7.1",
+    "httpx==0.28.1",
+
+    "langgraph==0.2.60",
+    "langchain-core==0.3.28",
+    "langchain-anthropic==0.3.1",
+    "langchain-openai==0.2.14",
+    "langchain-google-genai==2.0.7",
+    "langchain-aws==0.2.10",
+
+    "langfuse==2.57.0",
+]
+
+[project.optional-dependencies]
+# CrewAI is DELIBERATELY not a runtime dependency.
+#
+# `crewai` requires `crewai-tools`, which pulls in a browser-automation stack,
+# `pytube` and `youtube-transcript-api`. None of that belongs in an image whose
+# job is to reason about a customer's production infrastructure — it is a large
+# attack surface acquired for a feature no shipped agent uses yet.
+#
+# `graph/crews.py` imports it lazily and falls back to the single-model
+# hypothesize node when it is absent, so the default image runs every agent
+# correctly without it. Install this extra only in an image that actually
+# serves a crew-backed agent:
+#     pip install -e ".[crew]"
+crew = [
+    "crewai==0.86.0",
+]
+dev = [
+    "pytest==8.3.4",
+    "ruff==0.8.4",
+]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["agent_runtime*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

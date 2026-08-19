@@ -35,6 +35,20 @@ public class RestClientConfig {
         return peerClient(properties.getWorkflow());
     }
 
+    /**
+     * The Python reasoning runtime.
+     *
+     * <p>Built exactly like the others, but its timeout budget comes from
+     * {@code autoops.agent.runtime.read-timeout} and is measured in minutes —
+     * see {@link AgentProperties#getRuntime()}. It runs on the loop's own
+     * executor, never on a request thread, so a long call here holds nothing
+     * a user is waiting on.
+     */
+    @Bean("runtimeRestClient")
+    public RestClient runtimeRestClient(AgentProperties properties) {
+        return peerClient(properties.getRuntime());
+    }
+
     private static RestClient peerClient(AgentProperties.Peer peer) {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout((int) peer.getConnectTimeout().toMillis());

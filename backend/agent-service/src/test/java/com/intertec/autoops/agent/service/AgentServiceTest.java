@@ -108,7 +108,8 @@ class AgentServiceTest {
     /** Provider-built agent rolled out into the tenant's project. */
     private Agent rolledOut(String name, String tools) {
         return agentService.rollOut(TENANT, ACTOR, TOKEN, PROJECT, CATALOG_ID, name,
-                "Watches production", "gpt-4o", "Escalate anything you cannot fix.", tools);
+                "Watches production", "gpt-4o", "Escalate anything you cannot fix.",
+                null, null, tools);
     }
 
     // ------ quota ------
@@ -427,12 +428,49 @@ class AgentServiceTest {
      * The limit is per PROJECT, not per tenant: a customer running two
      * projects may legitimately have the same agent in both.
      */
+    /**
+     * A Python-authored agent arrives as a REFERENCE, not a persona.
+     *
+     * <p>This is the sealing guarantee at the receiving end: what lands in the
+     * customer's row names a module in agent-runtime's image, and the
+     * instructions that make the agent worth paying for are never copied here
+     * at all.
+     */
+    @Test
+    void aRolledOutPythonAgentStoresItsGraphRefAndNoPersona() {
+        Agent agent = agentService.rollOut(TENANT, ACTOR, TOKEN, PROJECT, CATALOG_ID,
+                "Linux Server Health Check Agent", "Checks a host", "claude-sonnet-5",
+                null, "linux.server_health_check", "1.0.0", null);
+
+        assertEquals("linux.server_health_check", agent.getGraphRef());
+        assertEquals("1.0.0", agent.getGraphVersion());
+        assertNull(agent.getInstructions());
+    }
+
+    /**
+     * A customer cannot point their own agent at a graph module.
+     *
+     * <p>The module IS the product. If {@code create} could set a graph ref,
+     * any tenant could run the provider's phased agents — prompts, judgement
+     * and all — without ever being sold one. The only route to a graph ref is
+     * being given it by a rollout.
+     */
+    @Test
+    void aCustomerBuiltAgentCannotAcquireAGraphRef() {
+        Agent agent = agentService.create(TENANT, ACTOR, TOKEN, PROJECT, "My own agent",
+                "Mine", "gpt-4o", "Do as I say.", null);
+
+        assertNull(agent.getGraphRef());
+        assertNull(agent.getGraphVersion());
+    }
+
     @Test
     void theSameCatalogAgentMayGoToTwoOfACustomersProjects() {
         rolledOut("Banking Ops Copilot", null);
 
         Agent second = agentService.rollOut(TENANT, ACTOR, TOKEN, OTHER_PROJECT, CATALOG_ID,
-                "Banking Ops Copilot", "Watches production", "gpt-4o", "Escalate.", null);
+                "Banking Ops Copilot", "Watches production", "gpt-4o", "Escalate.",
+                null, null, null);
 
         assertEquals(OTHER_PROJECT, second.getProjectId());
         assertEquals(2, agentRepository.count());
@@ -447,5 +485,41 @@ class AgentServiceTest {
 
         assertNull(second.getSourceId());
         assertEquals(2, agentRepository.count());
+    }
+
+    // ------ pointing a delivered agent at a different model ------
+
+    @Test
+    void aTenantMayChangeTheModelOfAProviderManagedAgent() {
+        // The one exception to the seal: which vendor processes a customer's
+        // infrastructure data is their decision, not their provider's.
+        Agent delivered = rolledOut("Delivered", null);
+
+        Agent updated = agentService.setModel(TENANT, TOKEN, delivered.getId(),
+                "anthropic.claude-sonnet-5");
+
+        assertEquals("anthropic.claude-sonnet-5", updated.getModel());
+        assertEquals(Agent.Origin.PROVIDER, updated.getOrigin());
+    }
+
+    @Test
+    void changingTheModelLeavesThePersonaAndAllowListAlone() {
+        Agent delivered = rolledOut("Sealed", null);
+
+        Agent updated = agentService.setModel(TENANT, TOKEN, delivered.getId(), "gpt-4o-mini");
+
+        assertEquals("Escalate anything you cannot fix.", updated.getInstructions());
+        assertEquals(delivered.getToolCount(), updated.getToolCount());
+    }
+
+    @Test
+    void aBlankModelIsRefused() {
+        // An agent with no model cannot resolve a credential, so accepting one
+        // would only move the failure to run time.
+        Agent delivered = rolledOut("NoModel", null);
+
+        AgentException ex = assertThrows(AgentException.class,
+                () -> agentService.setModel(TENANT, TOKEN, delivered.getId(), "  "));
+        assertTrue(ex.getMessage().contains("Choose a model"));
     }
 }

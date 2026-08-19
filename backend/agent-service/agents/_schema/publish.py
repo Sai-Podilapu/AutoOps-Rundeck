@@ -5,6 +5,25 @@
     AUTOOPS_PROVIDER_USER=... AUTOOPS_PROVIDER_PASSWORD=... \
         python backend/agent-service/agents/_schema/publish.py
 
+Two kinds of agent get published from here.
+
+**JSON agents** are the files under `agents/<DOMAIN>/`. Their persona travels in
+the catalog `definition` and is copied into every customer's database on
+rollout, protected only by no API exposing it.
+
+**Python agents** live in agent-runtime's registry, and only their MANIFEST is
+published: name, description, model, tool refs, guardrails. The persona, the
+prompts and the phase graph stay in the provider's image and are never
+delivered anywhere, so what lands in a customer's row is a reference —
+`{"kind":"PYTHON","ref":"linux.server_health_check","version":"1.0.0"}` — and
+agent-runtime resolves it at run time. That is the stronger of the two, and new
+agents should be authored that way.
+
+Manifests are fetched from a running agent-runtime (`--runtime`), because the
+registry is the source of truth and a second copy in this repo would drift:
+
+    python .../publish.py --runtime http://localhost:8089 --dry-run
+
 Workflows are published BEFORE agents, and an agent whose referenced workflow
 is not in the catalog is refused before anything is written — a delivered agent
 whose allow-list resolves to nothing is worse than no agent at all.
@@ -32,6 +51,8 @@ import urllib.request
 ROOT = pathlib.Path(__file__).resolve().parent.parent          # .../agents
 WORKFLOW_ROOT = ROOT.parent / "workflows"                      # .../workflows
 DEFAULT_BASE = os.environ.get("AUTOOPS_API", "http://localhost:8080/api")
+DEFAULT_RUNTIME = os.environ.get("AGENT_RUNTIME_URL", "http://localhost:8089")
+RUNTIME_TOKEN = os.environ.get("AGENT_RUNTIME_INTERNAL_TOKEN", "dev-internal-token")
 
 # Keys RolloutService.rollOutAgent reads out of an AGENT catalog definition.
 AGENT_DEFINITION_KEYS = ("description", "model", "instructions", "tools")
@@ -50,31 +71,117 @@ def discover():
     return workflows, agents
 
 
-def check_consistency(workflows, agents):
+def fetch_manifests(runtime, token):
+    """The PUBLIC manifest of every agent in a running agent-runtime.
+
+    Fetched rather than read off disk on purpose. The registry in that image is
+    what will actually run, and a manifest copied into this repo would be a
+    second source of truth that drifts the first time someone bumps a version
+    and forgets. If the runtime is unreachable, that is a refusal: publishing a
+    catalog entry pointing at a build nobody has confirmed exists is how a
+    tenant ends up holding a ref that resolves to nothing.
+    """
+    req = urllib.request.Request(f"{runtime.rstrip('/')}/v1/agents")
+    req.add_header("X-Internal-Token", token)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        sys.exit(f"agent-runtime refused the manifest request: HTTP {exc.code}. "
+                 f"Check AGENT_RUNTIME_INTERNAL_TOKEN.")
+    except Exception as exc:
+        sys.exit(f"Could not reach agent-runtime at {runtime}: {exc}")
+
+    # The compatibility agent is a runtime fallback for JSON personas, not a
+    # product. Publishing it would put a catalog entry in front of customers
+    # that does nothing on its own.
+    return [m for m in body.get("agents", []) if m.get("ref") != "generic.single_phase"]
+
+
+def check_consistency(workflows, agents, manifests):
     """Refuse to publish a set that cannot work once delivered."""
     problems = []
-    by_task = {}
 
-    for path in workflows:
-        doc = load(path)
-        by_task[doc["taskId"]] = doc
+    # A workflow's ref IS its file stem, and that is what gets stored in the
+    # published definition. Matching on the whole ref rather than just the
+    # RD- prefix is what makes a typo in the tail of a reference an error here
+    # instead of a broken tool after delivery.
+    refs = {path.stem for path in workflows}
 
     for path in agents:
         doc = load(path)
         for tool in doc["tools"]:
-            ref_task = re.match(r"^(RD-\d{3})-", tool["ref"])
-            if not ref_task or ref_task.group(1) not in by_task:
+            if tool["ref"] not in refs:
                 problems.append(
                     f"{doc['taskId']}: tool ref '{tool['ref']}' has no published "
                     f"workflow — the delivered agent would have no working tool"
                 )
+
+    for manifest in manifests:
+        for tool in manifest.get("tools", []):
+            if tool.get("ref") not in refs:
+                problems.append(
+                    f"{manifest['ref']}: tool ref '{tool.get('ref')}' has no published "
+                    f"workflow — the delivered agent would have no working tool"
+                )
+        # The whole point of the Python path is that the product does not ship.
+        # A manifest carrying a persona means someone widened Manifest.to_json,
+        # and it must not reach a customer's database.
+        for leaked in ("persona", "instructions", "prompts"):
+            if leaked in manifest:
+                problems.append(
+                    f"{manifest['ref']}: manifest contains '{leaked}'. A published "
+                    f"manifest must carry nothing the customer should not read."
+                )
+
+    titles = [m["name"] for m in manifests] + [load(p)["name"] for p in agents]
+    for title in {t for t in titles if titles.count(t) > 1}:
+        # The catalog has no unique key on title, but this script matches on it
+        # to decide update-vs-create. Two items sharing one would leapfrog each
+        # other on every run.
+        problems.append(f"Two agents are both titled {title!r}; titles must be unique.")
+
     return problems
 
 
-def workflow_payload(doc):
+def superseded(agents, manifests):
+    """JSON agents that a Python module has taken over, keyed by task id.
+
+    An agent rewritten as a Python module keeps its RD- id, because that is what
+    ties it to the use case that justified it. Both files then describe the same
+    agent, and publishing both would put two catalog entries in front of the
+    customer competing for one title.
+
+    The Python one wins, and the JSON file STAYS in the tree — it is still the
+    authoring record, it still carries the metadata the workflow half is checked
+    against, and deleting it would lose the history of an agent that has been
+    migrated. It simply stops being published.
+    """
+    claimed = {m.get("taskId") for m in manifests if m.get("taskId")}
+    return {path for path in agents if load(path).get("taskId") in claimed}
+
+
+def workflow_payload(doc, ref):
     # nodes[] is what ExecutionEngine walks; inputs[] is what
     # InternalAgentDispatchController.workflowInputs returns as the form.
-    definition = {"nodes": doc["nodes"], "inputs": doc["inputs"]}
+    #
+    # `ref` is how rollout finds this workflow again. An agent's allow-list
+    # names a workflow by this stable key rather than by id, because an id
+    # means nothing across tenants. Without it stored here there is no way to
+    # match a tool reference back to a catalog row — the title is not a key.
+    # requires[] travels with the definition so the delivery-time readiness
+    # check can tell a customer what to provide, rather than letting them
+    # discover it as a run failure.
+    # `description` travels INSIDE the definition, like `ref` and `requires`,
+    # because the workflows table has no column for it — and without it the
+    # description dies at delivery. That matters more than it sounds: it is
+    # the text an agent's model reads to decide whether a tool can answer the
+    # question at all. With only the title to go on, an agent asked to
+    # inventory S3 buckets refused, because "S3 Public Access Audit" sounds
+    # like a security scan rather than the bucket listing it actually returns.
+    definition = {"ref": ref, "description": doc["description"],
+                  "requires": doc.get("requires", []),
+                  "nodes": doc["nodes"], "inputs": doc["inputs"]}
     return {
         "title": doc["title"],
         "description": doc["description"],
@@ -94,6 +201,25 @@ def agent_payload(doc):
         "category": doc["domain"],
         "premium": False,
         "definition": json.dumps(definition),
+    }
+
+
+def manifest_payload(manifest):
+    """A Python agent's catalog row: a reference, and nothing the customer
+    should not read.
+
+    ``definition`` is the manifest verbatim. RolloutService keys off
+    ``kind == "PYTHON"`` to send ``graphRef``/``graphVersion`` instead of
+    ``instructions``, and agent-runtime resolves the ref against its own
+    registry at run time — refusing outright if this build does not contain it.
+    """
+    return {
+        "title": manifest["name"],
+        "description": manifest["description"],
+        "type": "agent",
+        "category": manifest["domain"],
+        "premium": False,
+        "definition": json.dumps(manifest),
     }
 
 
@@ -176,22 +302,38 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="print the plan, write nothing")
     ap.add_argument("--print-sql", action="store_true", help="emit SQL instead of calling the API")
     ap.add_argument("--api", default=DEFAULT_BASE)
+    ap.add_argument("--runtime", default=DEFAULT_RUNTIME,
+                    help="agent-runtime base URL; its registry is the source of truth "
+                         "for Python-authored agents")
+    ap.add_argument("--no-runtime", action="store_true",
+                    help="publish only the JSON agents in this tree")
     args = ap.parse_args()
 
     workflows, agents = discover()
-    if not workflows and not agents:
+    manifests = [] if args.no_runtime else fetch_manifests(args.runtime, RUNTIME_TOKEN)
+
+    if not workflows and not agents and not manifests:
         sys.exit("nothing to publish")
 
-    problems = check_consistency(workflows, agents)
+    # A JSON agent that has been rewritten as a Python module is not published
+    # twice — see superseded().
+    replaced = superseded(agents, manifests)
+    remaining = [p for p in agents if p not in replaced]
+
+    problems = check_consistency(workflows, remaining, manifests)
     if problems:
         print("Refusing to publish:")
         for problem in problems:
             print(f"  - {problem}")
         return 1
 
+    for path in sorted(replaced):
+        print(f"skipping {path.relative_to(ROOT.parent)} — superseded by a Python agent")
+
     # Order matters: an agent references a workflow, so the workflow goes first.
-    planned = [("workflow", p, workflow_payload(load(p))) for p in workflows] \
-        + [("agent", p, agent_payload(load(p))) for p in agents]
+    planned = [("workflow", p, workflow_payload(load(p), p.stem)) for p in workflows] \
+        + [("agent", p, agent_payload(load(p))) for p in remaining] \
+        + [("agent-py", pathlib.Path(m["ref"]), manifest_payload(m)) for m in manifests]
 
     if args.print_sql:
         print("-- Platform catalog bootstrap. Review before running.")
@@ -201,7 +343,11 @@ def main():
 
     if args.dry_run:
         for kind, path, payload in planned:
-            print(f"would publish {kind:9} {payload['title']!r}  ({path.relative_to(ROOT.parent)})")
+            # A Python agent has no file here — its "path" is its registry ref,
+            # which is the honest thing to show for something that lives in the
+            # runtime's image rather than in this tree.
+            where = path if kind == "agent-py" else path.relative_to(ROOT.parent)
+            print(f"would publish {kind:9} {payload['title']!r}  ({where})")
         print(f"\n{len(planned)} item(s); nothing written")
         return 0
 

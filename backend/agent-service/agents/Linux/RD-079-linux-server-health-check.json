@@ -4,6 +4,7 @@
   "subCategory": "Health & Monitoring",
   "name": "Linux Server Health Check Agent",
   "description": "Collects CPU, memory, disk, swap and load figures from a Linux host, compares them against per-run thresholds and reports what breached. Read-only: it inspects, it never remediates.",
+  "model": "anthropic.claude-sonnet-5",
   "scope": "NOC",
   "priority": "High",
   "complexity": "Low",
@@ -15,7 +16,8 @@
   "tools": [
     {
       "type": "WORKFLOW",
-      "ref": "RD-079-linux-server-health-check"
+      "ref": "RD-079-linux-server-health-check",
+      "mutating": false
     }
   ],
   "guardrails": [

@@ -8,23 +8,72 @@ const API_BASE = import.meta.env.VITE_API_URL || "/api";
 const ACCESS_KEY = "autoops_access_token";
 const REFRESH_KEY = "autoops_refresh_token";
 
-// Real, localStorage-backed token storage (replaces the old mock stub).
+/**
+ * Token storage, scoped to ONE TAB.
+ *
+ * sessionStorage, NOT localStorage. localStorage is a single bucket shared by
+ * every tab on the origin, so signing into a second account overwrote the
+ * first: both tabs then read whichever token was written last and, on refresh,
+ * both showed the same account with the same role. Operators legitimately hold
+ * two sessions at once — a provider console in one tab and the customer
+ * workspace they are supporting in another — and that pattern is impossible on
+ * shared storage, whatever the backend does. The role travels inside the JWT,
+ * so one shared token means one shared identity everywhere.
+ *
+ * Trade-off, accepted deliberately: sessionStorage survives a RELOAD but not
+ * closing the tab, so a new tab starts signed out. There is no version of this
+ * that keeps both per-tab accounts and a single browser-wide session — and the
+ * obvious compromise (localStorage as a seed for new tabs) is worse than it
+ * looks: refresh tokens rotate on use, so a new tab seeded with a token another
+ * tab had already rotated would replay it and revoke that tab's whole session
+ * family. Losing a session on tab close beats logging out the tab next door.
+ */
 export const tokenStore = {
   get access() {
-    return localStorage.getItem(ACCESS_KEY);
+    return sessionStorage.getItem(ACCESS_KEY);
   },
   get refresh() {
-    return localStorage.getItem(REFRESH_KEY);
+    return sessionStorage.getItem(REFRESH_KEY);
   },
   set(access, refresh) {
-    if (access) localStorage.setItem(ACCESS_KEY, access);
-    if (refresh) localStorage.setItem(REFRESH_KEY, refresh);
+    if (access) sessionStorage.setItem(ACCESS_KEY, access);
+    if (refresh) sessionStorage.setItem(REFRESH_KEY, refresh);
   },
   clear() {
+    sessionStorage.removeItem(ACCESS_KEY);
+    sessionStorage.removeItem(REFRESH_KEY);
+    // Tokens written by a build that used localStorage. Without this a stale
+    // pair outlives the fix, and one of them is a refresh token that still
+    // works — so it would keep resurrecting an account the user signed out of.
     localStorage.removeItem(ACCESS_KEY);
     localStorage.removeItem(REFRESH_KEY);
   },
 };
+
+/**
+ * One-time move of tokens left in localStorage by the shared-storage build.
+ *
+ * Adopts them into THIS tab and removes the shared copy, so an operator who was
+ * signed in before the upgrade stays signed in instead of being bounced to the
+ * login screen. The removal is the important half: left in place, the next tab
+ * to open would adopt the same pair and the accounts would bleed together
+ * again, which is the bug this replaces.
+ */
+(function adoptLegacyTokens() {
+  try {
+    const access = localStorage.getItem(ACCESS_KEY);
+    const refresh = localStorage.getItem(REFRESH_KEY);
+    if (!access && !refresh) return;
+    if (!sessionStorage.getItem(ACCESS_KEY) && !sessionStorage.getItem(REFRESH_KEY)) {
+      if (access) sessionStorage.setItem(ACCESS_KEY, access);
+      if (refresh) sessionStorage.setItem(REFRESH_KEY, refresh);
+    }
+    localStorage.removeItem(ACCESS_KEY);
+    localStorage.removeItem(REFRESH_KEY);
+  } catch {
+    /* storage disabled (private mode, blocked cookies) — nothing to migrate */
+  }
+})();
 
 export class ApiError extends Error {
   constructor(message, status, data) {
@@ -281,10 +330,16 @@ function mapWorkflow(w) {
     // The server's own answer to "may this caller change it?" — never inferred
     // client-side, so the button and the API agree.
     editable: w.editable !== false,
-    // Live run stats (null until the first run; never-run shows a full bar).
-    successRate: w.successRate ?? 100,
+    // Live run stats. Null until the first run, and deliberately left null:
+    // defaulting to 100 showed a perfect record for something that had never
+    // executed, which is the one number a customer judges trust from.
+    successRate: w.successRate ?? null,
     lastRunAt: w.lastRunAt ?? null,
     runsTotal: w.runsTotal ?? 0,
+    // Live, from the server: true while a run is QUEUED or RUNNING,
+    // whoever started it — an agent, a schedule, the API or the Run
+    // button. Local click state could only ever know about the last.
+    running: w.running === true,
     createdAt: w.createdAt,
     updatedAt: w.updatedAt,
   };
@@ -524,6 +579,24 @@ async function updateAgentReal(id, body) {
   }
   return mapAgent(
     await realFetch(`/agents/${id}`, { method: "PUT", auth: true, body: payload }),
+  );
+}
+
+/**
+ * Point an agent at a different model.
+ *
+ * Its own endpoint rather than a field on the update above, because it is the
+ * one change a customer may make to a provider-managed agent: the persona and
+ * the tool allow-list stay sealed, but which vendor processes their data is
+ * theirs to choose. PUT /agents/{id} is refused on a managed agent; this is not.
+ */
+async function setAgentModel(id, model) {
+  return mapAgent(
+    await realFetch(`/agents/${id}/model`, {
+      method: "POST",
+      auth: true,
+      body: { model },
+    }),
   );
 }
 
@@ -1543,6 +1616,8 @@ export const api = {
     realFetch("/model-providers/catalog", { auth: true }),
   /** Models this workspace can actually reach, for the agent model picker. */
   listWorkspaceModels: () => realFetch("/model-providers/models", { auth: true }),
+  /** Switch an agent's model — allowed even on a provider-managed agent. */
+  setAgentModel,
   saveModelProvider: (body) =>
     realFetch("/model-providers", { method: "POST", auth: true, body }),
   removeModelProvider: (id) =>

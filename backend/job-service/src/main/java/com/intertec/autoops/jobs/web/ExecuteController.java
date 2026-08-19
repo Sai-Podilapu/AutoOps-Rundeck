@@ -4,6 +4,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.intertec.autoops.jobs.execution.StepRunner;
 import com.intertec.autoops.jobs.service.StepExecutionService;
 import org.springframework.web.bind.annotation.PostMapping;
+import java.util.Set;
+import java.util.Map;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -30,6 +33,19 @@ public class ExecuteController {
 
     public record ExecuteResponse(boolean success, String output, String error,
                                   Integer exitCode, long durationMs, String executor) {
+    }
+
+    /**
+     * What this deployment can execute. Read by core-service's readiness check
+     * so a customer is told up front that an automation cannot run here,
+     * instead of discovering it as a failed step. Asking the service rather
+     * than hard-coding the list is the whole point: the answer has to change
+     * on the day a runner is added.
+     */
+    @GetMapping("/internal/runners")
+    public Map<String, Object> runners() {
+        Set<String> types = stepExecutionService.supportedTypes();
+        return Map.of("types", types, "count", types.size());
     }
 
     @PostMapping("/internal/execute")

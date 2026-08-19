@@ -2,6 +2,7 @@ package com.intertec.autoops.jobs.execution.terraform;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.intertec.autoops.jobs.config.JobProperties;
+import com.intertec.autoops.jobs.execution.CloudCredentialEnv;
 import com.intertec.autoops.jobs.execution.ProcessSupport;
 import com.intertec.autoops.jobs.execution.StepRunner;
 import org.springframework.stereotype.Component;
@@ -116,60 +117,20 @@ public class TerraformRunner implements StepRunner {
         return "terraform"; // let the real run produce the not-found error
     }
 
-    /** Provider env vars from the integration's credential bundle. */
+    /**
+     * Provider env vars from the integration's credential bundle.
+     *
+     * <p>Kept as a method here because callers already reference it; the
+     * mapping itself moved to {@link CloudCredentialEnv}, which pyscript and
+     * powershell steps now share. Terraform was the only runner that could
+     * reach a customer's cloud account for no better reason than that this
+     * code lived in its package.
+     */
     public static Map<String, String> credentialEnv(JsonNode credentials, Path workDir)
             throws IOException {
-        Map<String, String> env = new HashMap<>();
-        if (credentials == null || credentials.isMissingNode() || credentials.isNull()) {
-            return env;
-        }
-        String platform = credentials.path("platform").asText("");
-        JsonNode data = credentials.path("data");
-        switch (platform) {
-            case "AWS" -> {
-                put(env, "AWS_ACCESS_KEY_ID", first(data, "accessId", "accessKey", "accessKeyId"));
-                put(env, "AWS_SECRET_ACCESS_KEY", first(data, "secret", "secretKey", "secretAccessKey"));
-                put(env, "AWS_DEFAULT_REGION", first(data, "region"));
-                put(env, "AWS_REGION", first(data, "region"));
-            }
-            case "AZURE" -> {
-                put(env, "ARM_CLIENT_ID", first(data, "clientId"));
-                put(env, "ARM_CLIENT_SECRET", first(data, "clientSecret"));
-                put(env, "ARM_TENANT_ID", first(data, "tenantId"));
-                put(env, "ARM_SUBSCRIPTION_ID", first(data, "subscriptionId"));
-            }
-            case "GCP" -> {
-                String serviceAccount = first(data, "serviceAccount", "serviceAccountJson");
-                if (serviceAccount != null) {
-                    Path saFile = workDir.resolve("gcp-sa.json");
-                    Files.writeString(saFile, serviceAccount, StandardCharsets.UTF_8);
-                    env.put("GOOGLE_APPLICATION_CREDENTIALS", saFile.toAbsolutePath().toString());
-                    env.put("GOOGLE_CREDENTIALS", serviceAccount);
-                }
-                put(env, "GOOGLE_PROJECT", first(data, "projectId"));
-            }
-            default -> {
-                // Unknown platform: no env — the config decides what it needs.
-            }
-        }
-        return env;
+        return CloudCredentialEnv.forBundle(credentials, workDir);
     }
 
-    private static String first(JsonNode data, String... keys) {
-        for (String key : keys) {
-            JsonNode node = data.path(key);
-            if (node.isTextual() && !node.asText().isBlank()) {
-                return node.asText();
-            }
-        }
-        return null;
-    }
-
-    private static void put(Map<String, String> env, String key, String value) {
-        if (value != null) {
-            env.put(key, value);
-        }
-    }
 
     private static void deleteRecursively(Path root) {
         try (var paths = Files.walk(root)) {

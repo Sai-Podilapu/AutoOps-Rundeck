@@ -21,6 +21,8 @@ const inputCls =
  * @param fields  [{variable, label, type, required, defaultValue, options, maxLength}]
  */
 export default function RunInputsDialog({ title, fields, busy, onCancel, onRun }) {
+  const requiredCount = fields.filter((f) => f.required).length;
+  const optionalCount = fields.length - requiredCount;
   // Seeded from the schema's defaults, so a form of all-optional fields with
   // sensible defaults is one Enter away from running.
   const initial = useMemo(() => {
@@ -118,9 +120,15 @@ export default function RunInputsDialog({ title, fields, busy, onCancel, onRun }
       >
         <div className="border-b border-slate-200 px-6 py-4">
           <h2 className="text-base font-semibold text-slate-900">Run “{title}”</h2>
+          {/* Required and optional counted separately: "11 values" reads as
+              eleven things you must find answers for, when five are mandatory
+              and the rest have sane defaults or can be left alone. */}
           <p className="mt-0.5 text-xs text-slate-500">
-            This workflow asks for {fields.length} value
-            {fields.length === 1 ? "" : "s"} before it starts.
+            {requiredCount === 0
+              ? `${fields.length} optional value${fields.length === 1 ? "" : "s"} — run it as-is or adjust below.`
+              : optionalCount === 0
+                ? `${requiredCount} value${requiredCount === 1 ? "" : "s"} needed before it starts.`
+                : `${requiredCount} required, ${optionalCount} optional.`}
           </p>
         </div>
 

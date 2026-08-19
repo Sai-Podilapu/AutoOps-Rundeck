@@ -143,4 +143,35 @@ describe("running a rolled-out workflow", () => {
     );
     expect(apiMock.runWorkflow).not.toHaveBeenCalled();
   });
+
+  // A workflow that has never run has no success record. Defaulting the bar to
+  // 100% told the customer it had a perfect history, on the very column they
+  // judge trust from; 0% would have been the same lie inverted.
+  describe("success rate for a workflow that has never run", () => {
+    it("says so instead of showing a perfect score", () => {
+      rows = [workflow({ successRate: null, lastRunAt: null })];
+      renderPage();
+
+      expect(screen.getByText("No runs yet")).toBeInTheDocument();
+      expect(screen.queryByText("100%")).not.toBeInTheDocument();
+      expect(screen.queryByText("0%")).not.toBeInTheDocument();
+    });
+
+    it("still shows a real score once there is one", () => {
+      rows = [workflow({ successRate: 60, lastRunAt: "2026-08-17T10:00:00Z" })];
+      renderPage();
+
+      expect(screen.getByText("60%")).toBeInTheDocument();
+      expect(screen.queryByText("No runs yet")).not.toBeInTheDocument();
+    });
+
+    it("treats a genuine zero as a score, not as absent", () => {
+      // 0% means it has run and always failed — that must not read as "no runs".
+      rows = [workflow({ successRate: 0, lastRunAt: "2026-08-17T10:00:00Z" })];
+      renderPage();
+
+      expect(screen.getByText("0%")).toBeInTheDocument();
+      expect(screen.queryByText("No runs yet")).not.toBeInTheDocument();
+    });
+  });
 });

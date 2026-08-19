@@ -114,6 +114,49 @@ class AgentToolboxTest {
         assertFalse(built.skipped().isEmpty());
     }
 
+    /**
+     * The workflow's own description reaches the model.
+     *
+     * <p>This is the highest-leverage field on a tool — it is how the model
+     * decides whether to reach for it at all. Shown only the title
+     * "S3 Public Access Audit", a live agent refused a request to inventory
+     * buckets, never learning that the audit returns every bucket and its
+     * region. The title is not a description.
+     */
+    @Test
+    void offersTheWorkflowsOwnDescriptionToTheModel() {
+        when(toolTargets.findWorkflow(TENANT, 3L))
+                .thenReturn(Optional.of(new ToolTargetClient.Target(3L, PROJECT,
+                        "S3 Public Access Audit")));
+        when(automations.workflowInputs(TENANT, 3L)).thenReturn(
+                new AutomationClient.WorkflowInputs(List.of(), null,
+                        "Lists every S3 bucket in the account and reports which are "
+                                + "reachable by the public."));
+
+        AgentToolbox.Toolbox built = toolbox.build(agent("[{\"type\":\"WORKFLOW\",\"id\":3}]"));
+
+        String description = built.specs().getFirst().description();
+        assertTrue(description.contains("Lists every S3 bucket"),
+                "the model must be told what the automation returns");
+        assertTrue(description.contains("S3 Public Access Audit"),
+                "and which automation it is");
+    }
+
+    /** Pre-description workflows still get a usable tool, just a thinner one. */
+    @Test
+    void fallsBackToTheTitleWhenNoDescriptionWasPublished() {
+        when(toolTargets.findWorkflow(TENANT, 3L))
+                .thenReturn(Optional.of(new ToolTargetClient.Target(3L, PROJECT, "Reset password")));
+        when(automations.workflowInputs(TENANT, 3L))
+                .thenReturn(new AutomationClient.WorkflowInputs(List.of(), null, null));
+
+        String description = toolbox.build(agent("[{\"type\":\"WORKFLOW\",\"id\":3}]"))
+                .specs().getFirst().description();
+
+        assertTrue(description.contains("Reset password"));
+        assertTrue(description.contains("takes no arguments"));
+    }
+
     /** A Dify workflow's published form becomes the tool's arguments. */
     @Test
     void exposesAWorkflowsInputFormAsTheToolSchema() {
@@ -167,5 +210,80 @@ class AgentToolboxTest {
         assertTrue(toolbox.build(agent("{not json")).isEmpty());
         assertTrue(toolbox.build(agent(null)).isEmpty());
         assertTrue(toolbox.build(agent("\"JOB\"")).isEmpty());
+    }
+
+    // ----------------------------------------------- mutability, for phases ---
+
+    /**
+     * The default has to fall this way.
+     *
+     * <p>The Python runtime hides mutating tools from the phase that gathers
+     * evidence. If an unmarked entry were assumed read-only, a destructive
+     * automation nobody remembered to label would be handed to exactly the
+     * phase the narrowing exists to protect. Assuming it mutates instead makes
+     * a read-only tool invisible until someone labels it — the agent then says
+     * it could not collect something, which is visible, harmless and a
+     * one-line fix.
+     */
+    @Test
+    void anUnmarkedToolIsTreatedAsMutating() {
+        when(toolTargets.findJob(TENANT, 14L))
+                .thenReturn(Optional.of(new ToolTargetClient.Target(14L, PROJECT, "Nightly patch")));
+
+        AgentToolbox.Toolbox built = toolbox.build(agent("[{\"type\":\"JOB\",\"id\":14}]"));
+
+        assertTrue(built.resolve("job_14").mutating());
+        assertTrue(built.offered().getFirst().mutating());
+    }
+
+    @Test
+    void anExplicitlyReadOnlyToolIsCarriedThroughAsSuch() {
+        when(toolTargets.findWorkflow(TENANT, 3L))
+                .thenReturn(Optional.of(new ToolTargetClient.Target(3L, PROJECT, "Health check")));
+
+        AgentToolbox.Toolbox built = toolbox.build(
+                agent("[{\"type\":\"WORKFLOW\",\"id\":3,\"mutating\":false}]"));
+
+        assertFalse(built.resolve("workflow_3").mutating());
+        assertFalse(built.offered().getFirst().mutating());
+    }
+
+    /**
+     * A non-boolean {@code mutating} is not a value to coerce — it is a
+     * corrupt row, and a corrupt row must not read as "safe to show while
+     * diagnosing".
+     */
+    @Test
+    void aMalformedMutatingFlagFallsBackToMutating() {
+        when(toolTargets.findJob(TENANT, 14L))
+                .thenReturn(Optional.of(new ToolTargetClient.Target(14L, PROJECT, "Nightly patch")));
+
+        assertTrue(toolbox.build(agent("[{\"type\":\"JOB\",\"id\":14,\"mutating\":\"false\"}]"))
+                .resolve("job_14").mutating());
+        assertTrue(toolbox.build(agent("[{\"type\":\"JOB\",\"id\":14,\"mutating\":null}]"))
+                .resolve("job_14").mutating());
+    }
+
+    /**
+     * {@code offered()} must pair each spec with ITS OWN entry. A mismatch
+     * here would be the worst kind of bug in this class: the runtime would
+     * narrow correctly against the wrong answer.
+     */
+    @Test
+    void offeredPairsEverySpecWithItsOwnMutability() {
+        when(toolTargets.findJob(TENANT, 14L))
+                .thenReturn(Optional.of(new ToolTargetClient.Target(14L, PROJECT, "Purge archives")));
+        when(toolTargets.findWorkflow(TENANT, 3L))
+                .thenReturn(Optional.of(new ToolTargetClient.Target(3L, PROJECT, "Health check")));
+
+        AgentToolbox.Toolbox built = toolbox.build(agent(
+                "[{\"type\":\"WORKFLOW\",\"id\":3,\"mutating\":false},"
+                        + "{\"type\":\"JOB\",\"id\":14,\"mutating\":true}]"));
+
+        Map<String, Boolean> byName = built.offered().stream().collect(
+                java.util.stream.Collectors.toMap(tool -> tool.spec().name(),
+                        com.intertec.autoops.agent.client.RuntimeClient.OfferedTool::mutating));
+
+        assertEquals(Map.of("workflow_3", false, "job_14", true), byName);
     }
 }

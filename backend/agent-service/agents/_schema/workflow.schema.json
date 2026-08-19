@@ -11,7 +11,8 @@
     "description",
     "runtime",
     "inputs",
-    "nodes"
+    "nodes",
+    "requires"
   ],
   "additionalProperties": false,
   "properties": {
@@ -223,6 +224,70 @@
           },
           "continueOnError": {
             "type": "boolean"
+          }
+        }
+      }
+    },
+    "requires": {
+      "type": "array",
+      "description": "What must already be true in the CUSTOMER's workspace before this can run at all. Distinct from inputs[], which is asked at run time: a missing prerequisite is answered by an administrator once, not by an operator per run. Read at delivery so the customer is told what to provide instead of discovering it as a failure.",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "customerText"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "cloud_connection",
+              "runtime",
+              "ssh_access",
+              "network_access"
+            ]
+          },
+          "platform": {
+            "type": "string",
+            "enum": [
+              "AWS",
+              "AZURE",
+              "GCP",
+              "OCI"
+            ],
+            "description": "cloud_connection only. Matched against the tenant's CloudConnection records."
+          },
+          "runtime": {
+            "type": "string",
+            "enum": [
+              "shell",
+              "ssh",
+              "powershell",
+              "python",
+              "rest",
+              "terraform",
+              "kubernetes"
+            ],
+            "description": "runtime only. Unsatisfiable runtimes disable Run rather than failing mid-execution."
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Engineering detail, e.g. ec2:DeleteVolume. Shown to an admin, never as the primary text."
+          },
+          "customerText": {
+            "type": "string",
+            "minLength": 10,
+            "maxLength": 300,
+            "description": "Plain language, no jargon, no API identifiers. This is the sentence a non-engineer reads when asked to provide it."
+          },
+          "optional": {
+            "type": "boolean",
+            "default": false,
+            "description": "True when the automation degrades gracefully without it."
           }
         }
       }

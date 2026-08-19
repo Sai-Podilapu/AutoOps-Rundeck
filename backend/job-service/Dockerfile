@@ -22,16 +22,54 @@ FROM eclipse-temurin:21-jre-alpine-3.23@sha256:3f08b13888f595cc49edabea7250ba694
 # /usr/bin/ssh (the old "openssh-client" name no longer exists on 3.23).
 RUN apk add --no-cache \
         bash=5.3.3-r1 \
-        python3=3.12.13-r0 \
+        python3=3.12.14-r0 \
         py3-pip=25.1.1-r1 \
         openssh-client-default=10.2_p1-r0 \
         curl=8.20.0-r0 \
         opentofu=1.10.6-r8 \
         kubectl=1.34.2-r6 \
         su-exec=0.3-r0 \
+        ca-certificates=20260611-r0 \
+        less=685-r0 \
+        ncurses-terminfo-base=6.5_p20251123-r0 \
+        krb5-libs=1.22.1-r0 \
+        libgcc=15.2.0-r2 \
+        libintl=0.24.1-r1 \
+        libssl3=3.5.7-r0 \
+        libstdc++=15.2.0-r2 \
+        tzdata=2026c-r0 \
+        userspace-rcu=0.15.3-r0 \
+        zlib=1.3.2-r0 \
+        icu-libs=76.1-r1 \
     && ln -sf /usr/bin/tofu /usr/local/bin/terraform \
     && addgroup -S autoops && adduser -S autoops -G autoops \
     && rm -f /var/log/apk.log   # apk logs wall-clock timestamps → breaks reproducibility
+
+# PowerShell Core, for powershell steps. Alpine is musl, so this is the
+# linux-musl-x64 tarball rather than an apk — Microsoft ships no Alpine package.
+# SHA256-pinned like every other artifact here: an unverified 70MB download from
+# the internet would undo the reproducibility the rest of this file maintains.
+#
+# This runs the CROSS-PLATFORM modules (AWS.Tools, Az, PowerCLI, Microsoft.Graph,
+# SqlServer). It does NOT run Windows-only cmdlets — Get-ADUser, the Exchange
+# management shell, most Windows Server cmdlets — which need a real Windows host
+# over WinRM. That is a transport, not a missing module, and is separate work.
+ARG PWSH_VERSION=7.4.6
+ARG PWSH_SHA256=d5f63653c1cc73a8903d0181bd8616952b4b0e435758d98ee19a617c203c48a8
+RUN curl -sSL -o /tmp/pwsh.tar.gz \
+        "https://github.com/PowerShell/PowerShell/releases/download/v${PWSH_VERSION}/powershell-${PWSH_VERSION}-linux-musl-x64.tar.gz" \
+    && echo "${PWSH_SHA256}  /tmp/pwsh.tar.gz" | sha256sum -c - \
+    && mkdir -p /opt/microsoft/powershell/7 \
+    && tar -xzf /tmp/pwsh.tar.gz -C /opt/microsoft/powershell/7 \
+    && chmod +x /opt/microsoft/powershell/7/pwsh \
+    && ln -sf /opt/microsoft/powershell/7/pwsh /usr/bin/pwsh \
+    && rm /tmp/pwsh.tar.gz \
+    # Telemetry off: an automation host must not phone home about a customer's
+    # estate, and it also removes a startup network call that would slow or hang
+    # every step on an air-gapped deployment.
+    && echo "export POWERSHELL_TELEMETRY_OPTOUT=1" >> /etc/profile
+ENV POWERSHELL_TELEMETRY_OPTOUT=1 \
+    DOTNET_CLI_TELEMETRY_OPTOUT=1
 # The step-user pool. Steps are tenant-authored code: with one shared uid, a
 # step can read a concurrent step's decrypted kubeconfig or service-account key
 # (same-owner files, /proc/<pid>/environ). Each step leases one of these users

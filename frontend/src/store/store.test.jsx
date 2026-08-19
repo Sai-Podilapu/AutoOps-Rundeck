@@ -221,14 +221,16 @@ describe("sign out", () => {
 
 describe("account-scoped state", () => {
   /**
-   * Workflow drafts and the org identity are persisted in localStorage. On a
-   * shared machine they must not follow the previous account into the next
-   * session.
+   * Workflow drafts and the org identity are persisted in localStorage, which
+   * every tab and every account on the machine shares. They are keyed PER
+   * ACCOUNT so two signed-in accounts cannot overwrite each other — the old
+   * design was one shared bucket plus an owner check that wiped it on a
+   * mismatch, and with two live sessions that check ping-ponged and destroyed
+   * both accounts' prefs on every refresh.
    */
-  it("drops the previous account's org identity when a different user signs in", async () => {
-    localStorage.setItem("autoops_prefs_owner", "someone-else@acme.io");
+  it("does not hand one account the previous account's org identity", async () => {
     localStorage.setItem(
-      "autoops_prefs_v1",
+      "autoops_prefs_v1:someone-else@acme.io",
       JSON.stringify({ org: { name: "Someone Else Ltd", domain: "else.io" } }),
     );
     api.login.mockResolvedValue(CLIENT_SESSION);
@@ -239,13 +241,36 @@ describe("account-scoped state", () => {
     });
 
     await waitFor(() => expect(result.current.org.name).toBe("Your workspace"));
-    expect(localStorage.getItem("autoops_prefs_owner")).toBe("ada@acme.io");
+  });
+
+  it("leaves the other account's prefs intact rather than wiping them", async () => {
+    // The regression: signing in as ada used to reset the shared bucket, so the
+    // other account lost its org name and drafts the moment ada refreshed.
+    const otherKey = "autoops_prefs_v1:someone-else@acme.io";
+    localStorage.setItem(
+      otherKey,
+      JSON.stringify({ org: { name: "Someone Else Ltd", domain: "else.io" } }),
+    );
+    api.login.mockResolvedValue(CLIENT_SESSION);
+
+    const { result } = renderHook(() => useStore(), { wrapper });
+    await act(async () => {
+      await result.current.signIn("ada@acme.io", "pw");
+    });
+    await act(async () => {
+      result.current.setOrg({ name: "Acme Ltd" });
+    });
+
+    await waitFor(() =>
+      expect(JSON.parse(localStorage.getItem("autoops_prefs_v1:ada@acme.io")).org.name)
+        .toBe("Acme Ltd"),
+    );
+    expect(JSON.parse(localStorage.getItem(otherKey)).org.name).toBe("Someone Else Ltd");
   });
 
   it("keeps the org identity when the same user signs back in", async () => {
-    localStorage.setItem("autoops_prefs_owner", "ada@acme.io");
     localStorage.setItem(
-      "autoops_prefs_v1",
+      "autoops_prefs_v1:ada@acme.io",
       JSON.stringify({ org: { name: "Acme Ltd", domain: "acme.io" } }),
     );
     api.login.mockResolvedValue(CLIENT_SESSION);
@@ -255,7 +280,28 @@ describe("account-scoped state", () => {
       await result.current.signIn("ada@acme.io", "pw");
     });
 
-    expect(result.current.org.name).toBe("Acme Ltd");
+    await waitFor(() => expect(result.current.org.name).toBe("Acme Ltd"));
+  });
+
+  it("adopts the pre-namespacing bucket, but only for its recorded owner", async () => {
+    // Upgrade path: one shared bucket plus the owner key that said whose it was.
+    localStorage.setItem("autoops_prefs_owner", "ada@acme.io");
+    localStorage.setItem(
+      "autoops_prefs_v1",
+      JSON.stringify({ org: { name: "Legacy Ltd", domain: "legacy.io" } }),
+    );
+    api.login.mockResolvedValue(CLIENT_SESSION);
+
+    const { result } = renderHook(() => useStore(), { wrapper });
+    await act(async () => {
+      await result.current.signIn("ada@acme.io", "pw");
+    });
+
+    await waitFor(() => expect(result.current.org.name).toBe("Legacy Ltd"));
+    // Moved, not copied — a bucket left behind would be adopted again by
+    // whoever the owner key named next.
+    expect(localStorage.getItem("autoops_prefs_v1")).toBeNull();
+    expect(localStorage.getItem("autoops_prefs_owner")).toBeNull();
   });
 
   it("survives corrupt persisted preferences", async () => {

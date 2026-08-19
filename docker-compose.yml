@@ -239,6 +239,11 @@ services:
       WORKFLOW_SERVICE_URL: http://workflow-service:8086
       WORKFLOW_INTERNAL_TOKEN: ${WORKFLOW_INTERNAL_TOKEN:-dev-internal-token}
       AGENT_INTERNAL_TOKEN: ${AGENT_INTERNAL_TOKEN:-dev-internal-token}
+      AGENT_RUNTIME_URL: http://agent-runtime:8089
+      AGENT_RUNTIME_INTERNAL_TOKEN: ${AGENT_RUNTIME_INTERNAL_TOKEN:-dev-internal-token}
+      # The kill switch. Set false to send every run back to this service's own
+      # Java chat adapters — the loop that shipped before agent-runtime existed.
+      AGENT_RUNTIME_ENABLED: ${AGENT_RUNTIME_ENABLED:-true}
     ports:
       - "8087:8087"
     depends_on:
@@ -248,11 +253,41 @@ services:
         condition: service_healthy
       subscription-service:
         condition: service_healthy
+      # Deliberately NOT a depends_on. agent-runtime being down must fail the
+      # RUNS that need it, not stop this service booting — it also serves agent
+      # CRUD, the catalog and rollout, none of which touch the runtime. Making
+      # it a hard dependency would take the console's agent screens down with
+      # a reasoning outage.
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8087/actuator/health"]
       interval: 10s
       retries: 12
       start_period: 30s
+
+  # The reasoning half of the agents (Python 3.12 / FastAPI / LangGraph).
+  #
+  # STATELESS by construction: no database, no cache, no session. Every request
+  # from agent-service carries the entire run state, and this service hands back
+  # a new one. That is what makes it safe to restart mid-investigation, and why
+  # it has no volume and no depends_on for mysql.
+  #
+  # Not exposed through api-gateway. Its only caller is agent-service, over this
+  # network, holding the shared secret. The published port is for local
+  # debugging (GET /health reports which agents and prompt version are loaded).
+  agent-runtime:
+    build: ./backend/agent-runtime
+    environment:
+      AGENT_RUNTIME_INTERNAL_TOKEN: ${AGENT_RUNTIME_INTERNAL_TOKEN:-dev-internal-token}
+      AGENT_RUNTIME_MAX_TOKENS: ${AGENT_RUNTIME_MAX_TOKENS:-4096}
+      # Tracing is opt-in and never fails a run: with these unset the runtime
+      # logs a warning once and carries on untraced.
+      AGENT_RUNTIME_LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
+      AGENT_RUNTIME_LANGFUSE_HOST: http://langfuse:3000
+      AGENT_RUNTIME_LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      AGENT_RUNTIME_LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+    ports:
+      # 8089, not 8088 — plugin-service already publishes 8088.
+      - "8089:8089"
 
   # Notification channels (autoops_plugin). Owns the Slack/Teams/Outlook/
   # Gmail/GitHub/webhook plugins, each tenant's encrypted credentials for
@@ -352,5 +387,49 @@ services:
       api-gateway:
         condition: service_healthy
 
+  # ---------------------------------------------------------------------
+  # Tracing. Behind the "tracing" profile, so a plain `docker compose up`
+  # does not pay for it:  docker compose --profile tracing up -d
+  #
+  # Langfuse needs Postgres and MySQL cannot serve it, so this is a second
+  # database engine in the stack. That is the honest cost of the profile, and
+  # the reason it is opt-in rather than always-on. Nothing in the platform
+  # depends on it: agent-runtime treats tracing as best-effort and runs
+  # untraced when it is absent.
+  # ---------------------------------------------------------------------
+  langfuse-db:
+    image: postgres:16-alpine
+    profiles: ["tracing"]
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: ${LANGFUSE_DB_PASSWORD:-langfuse}
+      POSTGRES_DB: langfuse
+    volumes:
+      - langfuse-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 10s
+      retries: 12
+      start_period: 20s
+
+  langfuse:
+    image: langfuse/langfuse:2
+    profiles: ["tracing"]
+    environment:
+      DATABASE_URL: postgresql://langfuse:${LANGFUSE_DB_PASSWORD:-langfuse}@langfuse-db:5432/langfuse
+      NEXTAUTH_URL: http://localhost:3001
+      # Dev defaults. Both MUST be replaced outside local use: NEXTAUTH_SECRET
+      # signs session cookies and SALT keys the API-key hashes, so a shared
+      # default means anyone who has read this file can mint a session.
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-dev-langfuse-secret-change-me}
+      SALT: ${LANGFUSE_SALT:-dev-langfuse-salt-change-me}
+      TELEMETRY_ENABLED: "false"
+    ports:
+      - "3001:3000"
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+
 volumes:
   mysql-data:
+  langfuse-data:

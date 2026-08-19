@@ -3,6 +3,7 @@ package com.intertec.autoops.agent.loop;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.intertec.autoops.agent.client.AutomationClient;
+import com.intertec.autoops.agent.client.RuntimeClient;
 import com.intertec.autoops.agent.client.ToolTargetClient;
 import com.intertec.autoops.agent.domain.Agent;
 import org.slf4j.Logger;
@@ -48,8 +49,16 @@ public class AgentToolbox {
         this.automations = automations;
     }
 
-    /** One entry of the allow-list, resolved and ready to invoke. */
-    public record Tool(String name, String type, Long targetId, String targetName) {
+    /**
+     * One entry of the allow-list, resolved and ready to invoke.
+     *
+     * @param mutating whether running this changes the customer's state. It is
+     *                 what lets the Python runtime refuse to SHOW a destructive
+     *                 tool to a phase that is still gathering evidence, so it
+     *                 travels with the tool rather than being re-derived.
+     */
+    public record Tool(String name, String type, Long targetId, String targetName,
+                       boolean mutating) {
     }
 
     /**
@@ -68,6 +77,24 @@ public class AgentToolbox {
 
         public boolean isEmpty() {
             return specs.isEmpty();
+        }
+
+        /**
+         * The specs paired with their mutability, for the Python runtime.
+         *
+         * <p>Built here rather than in the client so the pairing comes from the
+         * same map {@link #resolve} answers from. Two separate walks over the
+         * allow-list could disagree about which entry a name refers to, and the
+         * one that disagreed would be the one deciding whether a destructive
+         * tool is shown to an evidence-gathering phase.
+         */
+        public List<RuntimeClient.OfferedTool> offered() {
+            List<RuntimeClient.OfferedTool> offered = new ArrayList<>();
+            for (ToolSpec spec : specs) {
+                Tool tool = byName.get(spec.name());
+                offered.add(new RuntimeClient.OfferedTool(spec, tool == null || tool.mutating()));
+            }
+            return List.copyOf(offered);
         }
     }
 
@@ -113,7 +140,7 @@ public class AgentToolbox {
                 "Run the automation job \"" + target.name() + "\". It runs its saved "
                         + "definition; it takes no arguments. Returns the run outcome and log.",
                 ToolSpec.objectSchema(Map.of(), List.of())));
-        byName.put(name, new Tool(name, "JOB", ref.id(), target.name()));
+        byName.put(name, new Tool(name, "JOB", ref.id(), target.name(), ref.mutating()));
     }
 
     private void addWorkflow(Agent agent, Ref ref, List<ToolSpec> specs, Map<String, Tool> byName,
@@ -145,12 +172,23 @@ public class AgentToolbox {
         }
 
         String name = "workflow_" + ref.id();
-        specs.add(new ToolSpec(name,
-                "Run the workflow \"" + target.name() + "\"."
-                        + (properties.isEmpty() ? " It takes no arguments." : "")
-                        + " Returns the run outcome and log.",
+        // The description is the highest-leverage field on a tool: it is how the
+        // model decides WHETHER to reach for this one at all. The workflow's
+        // own description is used when it has one, because the title alone is
+        // not enough to tell what an automation returns — an agent shown only
+        // "S3 Public Access Audit" refused a request to inventory buckets,
+        // never learning that the audit lists every bucket and its region.
+        StringBuilder description = new StringBuilder();
+        if (inputs.description() != null && !inputs.description().isBlank()) {
+            description.append(inputs.description().trim()).append("\n\n");
+        }
+        description.append("Runs the automation \"").append(target.name()).append("\"")
+                .append(properties.isEmpty() ? ", which takes no arguments" : "")
+                .append(". Returns the run outcome and its full output.");
+
+        specs.add(new ToolSpec(name, description.toString(),
                 ToolSpec.objectSchema(properties, required)));
-        byName.put(name, new Tool(name, "WORKFLOW", ref.id(), target.name()));
+        byName.put(name, new Tool(name, "WORKFLOW", ref.id(), target.name(), ref.mutating()));
     }
 
     /**
@@ -190,7 +228,15 @@ public class AgentToolbox {
 
     // -------------------------------------------------------- allow-list ---
 
-    private record Ref(String type, Long id) {
+    /**
+     * @param mutating declared by whoever authored the agent, because they are
+     *                 the only party that knows. Neither core-service nor
+     *                 workflow-service records whether a saved automation
+     *                 changes state — a job is a list of steps, and "does step
+     *                 four delete anything" is not a question their schema can
+     *                 answer.
+     */
+    private record Ref(String type, Long id, boolean mutating) {
     }
 
     /**
@@ -212,7 +258,8 @@ public class AgentToolbox {
                 String type = entry.path("type").asText("JOB").toUpperCase(Locale.ROOT);
                 long id = entry.path("id").asLong(0);
                 if (id > 0) {
-                    unique.add(new Ref("WORKFLOW".equals(type) ? "WORKFLOW" : "JOB", id));
+                    unique.add(new Ref("WORKFLOW".equals(type) ? "WORKFLOW" : "JOB", id,
+                            mutating(entry)));
                 }
             }
             return List.copyOf(unique);
@@ -221,5 +268,23 @@ public class AgentToolbox {
                     ex.getMessage());
             return List.of();
         }
+    }
+
+    /**
+     * Whether an allow-list entry changes state. <strong>Defaults to true.</strong>
+     *
+     * <p>This is the direction the default has to fall. Guessing "read-only"
+     * for an unmarked entry would hand a destructive automation to an
+     * evidence-gathering phase, which is the exact failure the narrowing
+     * exists to prevent. Guessing "mutating" makes a read-only tool invisible
+     * until someone marks it, so the agent reports that it could not collect
+     * something — visible, harmless and quick to fix.
+     *
+     * <p>Legacy JSON agents are unaffected either way: they run on the
+     * single-phase graph, which sees the whole allow-list regardless.
+     */
+    private static boolean mutating(JsonNode entry) {
+        JsonNode declared = entry.path("mutating");
+        return !declared.isBoolean() || declared.asBoolean();
     }
 }

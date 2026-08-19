@@ -88,7 +88,12 @@ public class AutomationClient {
      *              revoked — the tool is then left OUT of the model's list
      *              rather than offered and failing on first use
      */
-    public record WorkflowInputs(List<InputField> fields, String error) {
+    public record WorkflowInputs(List<InputField> fields, String error, String description) {
+
+        /** Pre-description callers and tests; the title is then all there is. */
+        public WorkflowInputs(List<InputField> fields, String error) {
+            this(fields, error, null);
+        }
     }
 
     /** Start a target, or raise the approval that must precede it. */
@@ -155,7 +160,8 @@ public class AutomationClient {
                     }
                 }
             }
-            return new WorkflowInputs(fields, str(response.get("error")));
+            return new WorkflowInputs(fields, str(response.get("error")),
+                    str(response.get("description")));
         } catch (Exception ex) {
             log.warn("Workflow {} inputs unavailable for tenant {}: {}", workflowId, tenantId,
                     ex.getMessage());

@@ -40,6 +40,21 @@ autoops:
       internal-token: ${WORKFLOW_INTERNAL_TOKEN:dev-internal-token}
       connect-timeout: ${WORKFLOW_CONNECT_TIMEOUT:2s}
       read-timeout: ${WORKFLOW_READ_TIMEOUT:5s}
+    # The Python reasoning runtime. Its read timeout is minutes rather than
+    # seconds because one call can span several model calls before the run
+    # reaches a boundary — and it always runs on the loop's own executor, never
+    # on a request thread, so nothing user-facing waits on it.
+    runtime:
+      base-url: ${AGENT_RUNTIME_URL:http://localhost:8089}
+      internal-token: ${AGENT_RUNTIME_INTERNAL_TOKEN:dev-internal-token}
+      connect-timeout: ${AGENT_RUNTIME_CONNECT_TIMEOUT:2s}
+      read-timeout: ${AGENT_RUNTIME_READ_TIMEOUT:4m}
+    loop:
+      # The kill switch. False sends every run back to this service's own
+      # ChatModel adapters — the loop that shipped before the Python runtime
+      # existed. Meant to be flipped by someone who does not want to think
+      # about it, so it is one variable and a restart.
+      runtime-enabled: ${AGENT_RUNTIME_ENABLED:true}
     # Shared secret this service REQUIRES on its own /internal/** endpoints.
     internal-token: ${AGENT_INTERNAL_TOKEN:dev-internal-token}
 

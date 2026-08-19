@@ -4,6 +4,7 @@
   "subCategory": "Cost & Governance",
   "name": "AWS Unused EBS Volume Cleanup Agent",
   "description": "Finds EBS volumes left unattached beyond a minimum age, presents the candidate list with monthly cost, and deletes only what a human has approved — snapshotting each volume first as the recovery path.",
+  "model": "anthropic.claude-sonnet-5",
   "scope": "NOC",
   "priority": "Medium",
   "complexity": "Medium",
@@ -17,7 +18,8 @@
   "tools": [
     {
       "type": "WORKFLOW",
-      "ref": "RD-142-unused-resource-cleanup"
+      "ref": "RD-142-unused-resource-cleanup",
+      "mutating": true
     }
   ],
   "guardrails": [

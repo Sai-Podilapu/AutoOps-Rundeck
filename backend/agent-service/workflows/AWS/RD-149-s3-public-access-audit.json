@@ -1,0 +1,39 @@
+{
+  "taskId": "RD-149",
+  "domain": "AWS",
+  "category": "AWS",
+  "title": "S3 Public Access Audit",
+  "description": "Lists every S3 bucket in the account and reports which are reachable by the public, and by which mechanism \u2014 access block, bucket policy or ACL. Read-only: it changes no bucket setting.",
+  "runtime": "python",
+  "inputs": [
+    {
+      "variable": "Region",
+      "label": "AWS region",
+      "type": "string",
+      "required": true,
+      "pattern": "^[a-z]{2}(-gov)?-[a-z]+-[0-9]$",
+      "default": "us-east-1",
+      "placeholder": "us-east-1",
+      "help": "One region per run. Bucket and IAM listings are account-wide; EC2 resources are per-region."
+    }
+  ],
+  "nodes": [
+    {
+      "type": "pyscript",
+      "label": "Audit bucket public access",
+      "value": "import json, sys\nimport boto3\nfrom botocore.exceptions import ClientError\n\n# A step with no cloud integration bound reaches signing time and raises\n# NoCredentialsError as a bare traceback. The agent would then file that\n# traceback as an observation. Fail here instead, with a sentence that names\n# what is missing and who fixes it.\n_creds = boto3.session.Session().get_credentials()\nif _creds is None:\n    print(json.dumps({\"error\": \"No AWS credentials reached this step. Bind an AWS cloud \"\n                               \"integration to this automation under Cloud Integrations, \"\n                               \"and make sure it is available to this project.\"}))\n    raise SystemExit(1)\n\nREGION = \"{{Region}}\"\ns3 = boto3.session.Session(region_name=REGION).client(\"s3\")\n\n\ndef public_reasons(bucket):\n    \"\"\"Every distinct way this bucket is reachable by the public. Read-only.\"\"\"\n    reasons = []\n\n    # The public access block OVERRIDES policy and ACL, so its absence is what\n    # makes the other two findings matter rather than being theoretical.\n    try:\n        cfg = s3.get_public_access_block(Bucket=bucket)[\"PublicAccessBlockConfiguration\"]\n        off = sorted(k for k, v in cfg.items() if not v)\n        if off:\n            reasons.append(\"public access block incomplete: \" + \", \".join(off))\n    except ClientError as e:\n        code = e.response[\"Error\"][\"Code\"]\n        if code == \"NoSuchPublicAccessBlockConfiguration\":\n            reasons.append(\"no public access block configured at all\")\n        else:\n            reasons.append(\"public access block unreadable (\" + code + \")\")\n\n    try:\n        if s3.get_bucket_policy_status(Bucket=bucket)[\"PolicyStatus\"][\"IsPublic\"]:\n            reasons.append(\"bucket policy grants public access\")\n    except ClientError as e:\n        if e.response[\"Error\"][\"Code\"] != \"NoSuchBucketPolicy\":\n            reasons.append(\"policy status unreadable (\" + e.response[\"Error\"][\"Code\"] + \")\")\n\n    try:\n        for grant in s3.get_bucket_acl(Bucket=bucket).get(\"Grants\", []):\n            uri = grant.get(\"Grantee\", {}).get(\"URI\", \"\")\n            if uri.endswith(\"/AllUsers\"):\n                reasons.append(\"ACL grants \" + str(grant.get(\"Permission\")) + \" to everyone\")\n            elif uri.endswith(\"/AuthenticatedUsers\"):\n                reasons.append(\"ACL grants \" + str(grant.get(\"Permission\"))\n                               + \" to any AWS account\")\n    except ClientError as e:\n        reasons.append(\"ACL unreadable (\" + e.response[\"Error\"][\"Code\"] + \")\")\n\n    return reasons\n\n\nout = {\"region\": REGION, \"buckets\": [], \"errors\": []}\ntry:\n    buckets = s3.list_buckets().get(\"Buckets\", [])\nexcept ClientError as e:\n    print(json.dumps({\"error\": \"could not list buckets: \" + str(e)}))\n    sys.exit(1)\n\nfor b in buckets:\n    name = b[\"Name\"]\n    try:\n        loc = s3.get_bucket_location(Bucket=name).get(\"LocationConstraint\") or \"us-east-1\"\n    except ClientError:\n        loc = \"unknown\"\n    try:\n        reasons = public_reasons(name)\n    except Exception as exc:            # one bad bucket must not end the audit\n        out[\"errors\"].append({\"bucket\": name, \"error\": str(exc)})\n        continue\n    out[\"buckets\"].append({\n        \"name\": name,\n        \"region\": loc,\n        \"created\": b[\"CreationDate\"].isoformat(),\n        \"public\": bool(reasons),\n        \"reasons\": reasons,\n    })\n\nout[\"summary\"] = {\n    \"total\": len(out[\"buckets\"]),\n    \"public\": sum(1 for x in out[\"buckets\"] if x[\"public\"]),\n    \"unreadable\": len(out[\"errors\"]),\n}\nprint(json.dumps(out, indent=2))"
+    }
+  ],
+  "requires": [
+    {
+      "kind": "cloud_connection",
+      "platform": "AWS",
+      "customerText": "An AWS cloud integration available to this project, with read-only permission for: s3:ListAllMyBuckets, s3:GetBucketLocation, s3:GetPublicAccessBlock, s3:GetBucketPolicyStatus, s3:GetBucketAcl"
+    },
+    {
+      "kind": "runtime",
+      "runtime": "python",
+      "customerText": "The job runner executes Python steps; boto3 ships in the image."
+    }
+  ]
+}

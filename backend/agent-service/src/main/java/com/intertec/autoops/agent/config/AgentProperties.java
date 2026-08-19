@@ -25,10 +25,25 @@ public class AgentProperties {
 
     private final Peer workflow = new Peer("http://localhost:8086", Duration.ofSeconds(5));
 
+    /**
+     * The Python reasoning runtime.
+     *
+     * <p>Its read timeout is minutes, not seconds, and that is not an
+     * oversight. Every other peer here answers a database question; this one
+     * answers a model, and a phased agent's reduce can span three model calls
+     * before it reaches a boundary. A five-second budget would abort the call
+     * AFTER the tokens were spent, which is the worst of both.
+     */
+    private final Peer runtime = new Peer("http://localhost:8089", Duration.ofMinutes(4));
+
     private final Loop loop = new Loop();
 
     public Loop getLoop() {
         return loop;
+    }
+
+    public Peer getRuntime() {
+        return runtime;
     }
 
     public String getJwksUri() {
@@ -73,6 +88,32 @@ public class AgentProperties {
      * them should be reachable by anything a model writes.
      */
     public static class Loop {
+
+        /**
+         * Whether the reasoning happens in the Python runtime or in this
+         * service's own {@code ChatModel} adapters.
+         *
+         * <p>A kill switch, and it is meant to be a real one. The Java loop is
+         * NOT deleted while this exists: an agent runtime that starts
+         * misbehaving against a customer's infrastructure at 3am needs an
+         * answer that is one environment variable and a restart, not a
+         * rollback of a service that also owns the approvals inbox.
+         *
+         * <p>It is safe to flip mid-flight in one direction only. A run parked
+         * on an approval holds a Python state blob in its transcript; turning
+         * the runtime OFF leaves that blob unreadable to the Java loop, which
+         * fails the run honestly rather than misreading it. Runs started under
+         * the Java loop are unaffected either way.
+         */
+        private boolean runtimeEnabled = true;
+
+        public boolean isRuntimeEnabled() {
+            return runtimeEnabled;
+        }
+
+        public void setRuntimeEnabled(boolean runtimeEnabled) {
+            this.runtimeEnabled = runtimeEnabled;
+        }
 
         /**
          * Model call → tool → model call. A run that never terminates on its

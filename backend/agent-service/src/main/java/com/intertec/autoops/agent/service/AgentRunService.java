@@ -1,8 +1,10 @@
 package com.intertec.autoops.agent.service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.intertec.autoops.agent.client.AutomationClient;
 import com.intertec.autoops.agent.client.ModelCredentialsClient;
+import com.intertec.autoops.agent.client.RuntimeClient;
 import com.intertec.autoops.agent.config.AgentProperties;
 import com.intertec.autoops.agent.domain.Agent;
 import com.intertec.autoops.agent.domain.AgentRun;
@@ -16,6 +18,7 @@ import com.intertec.autoops.agent.loop.ChatResponse;
 import com.intertec.autoops.agent.loop.ToolCall;
 import com.intertec.autoops.agent.loop.ToolResult;
 import com.intertec.autoops.agent.loop.TranscriptCodec;
+import com.intertec.autoops.agent.modelsdk.ModelVendor;
 import com.intertec.autoops.agent.repo.AgentRepository;
 import com.intertec.autoops.agent.repo.AgentRunRepository;
 import com.intertec.autoops.agent.repo.AgentRunStepRepository;
@@ -40,8 +43,22 @@ import java.util.Set;
 /**
  * The agent loop.
  *
- * <p>Ask the model. If it asked for a tool, run the tool and ask again. Stop
- * when it stops, when the step budget runs out, or when a tool needs a human.
+ * <p>Ask what to do. If the answer is a tool, run the tool and ask again. Stop
+ * when there is nothing left to ask, when the step budget runs out, or when a
+ * tool needs a human.
+ *
+ * <h2>Two ways of answering the first question</h2>
+ * {@link #driveWithRuntime} sends the run's state to the Python reasoning
+ * runtime and gets back a directive — that is the normal path, and it is where
+ * phased agents, per-phase tool narrowing and the evidence ledger live. The
+ * older path below asks a {@code ChatModel} directly and is kept behind
+ * {@code autoops.agent.loop.runtime-enabled} as a kill switch, plus for Huawei,
+ * which has an adapter here and none in Python.
+ *
+ * <p>Everything that makes the loop SAFE is in this class either way: the step
+ * budget, the approval park, attaching to the run an approval started, and an
+ * audit row per step. None of it crosses to Python, because all of it depends
+ * on the database and the approvals inbox.
  *
  * <h2>Why this is not a while-loop in memory</h2>
  * A run can PAUSE for a human and not move again for two days. So the loop's
@@ -60,10 +77,14 @@ import java.util.Set;
  * <h2>Partially answered turns</h2>
  * A model can ask for several tools in one turn, and vendors require every one
  * of them to be answered together. If the second of three needs approval, the
- * transcript is parked holding the results collected SO FAR, and the resume
- * path works out what is still outstanding by comparing the assistant turn's
- * tool calls against the results already recorded. No extra bookkeeping column
- * is needed, and no result is ever emitted twice.
+ * results collected SO FAR are parked and the resume path works out what is
+ * still outstanding, so no result is ever emitted twice.
+ *
+ * <p>The two paths park that state in different places, for one reason. The
+ * legacy loop owns its transcript, so a partial turn is just a partial message
+ * on it and needs no extra column. Under the runtime the transcript is an
+ * opaque blob this service must not parse, so the same bookkeeping lives in
+ * {@code pending_calls} and {@code pending_results} — see the V5 migration.
  */
 @Service
 public class AgentRunService {
@@ -105,6 +126,7 @@ public class AgentRunService {
     private final ChatModels chatModels;
     private final ModelCredentialsClient credentials;
     private final AutomationClient automations;
+    private final RuntimeClient runtime;
     private final TranscriptCodec transcripts;
     private final SubscriptionGate gate;
     private final ObjectMapper objectMapper;
@@ -118,6 +140,7 @@ public class AgentRunService {
                            ChatModels chatModels,
                            ModelCredentialsClient credentials,
                            AutomationClient automations,
+                           RuntimeClient runtime,
                            TranscriptCodec transcripts,
                            SubscriptionGate gate,
                            ObjectMapper objectMapper,
@@ -130,6 +153,7 @@ public class AgentRunService {
         this.chatModels = chatModels;
         this.credentials = credentials;
         this.automations = automations;
+        this.runtime = runtime;
         this.transcripts = transcripts;
         this.gate = gate;
         this.objectMapper = objectMapper;
@@ -248,6 +272,12 @@ public class AgentRunService {
             AgentToolbox.Toolbox tools = toolbox.build(agent);
             ModelCredentialsClient.Resolved resolved =
                     credentials.resolve(run.getTenantId(), run.getModel());
+
+            if (usesRuntime(resolved.vendor())) {
+                driveWithRuntime(run, agent, tools, resolved);
+                return;
+            }
+
             ChatModel model = chatModels.forVendor(resolved.vendor());
 
             List<ChatMessage> messages = transcripts.read(run.getTranscript());
@@ -313,6 +343,333 @@ public class AgentRunService {
             log.error("Agent run {} failed unexpectedly", runId, ex);
             failQuietly(runId, "The run stopped unexpectedly: " + ex.getMessage());
         }
+    }
+
+    // ----------------------------------------------------- python runtime ---
+
+    /**
+     * Whether this run's reasoning happens in the Python runtime.
+     *
+     * <p>Two ways to end up on the legacy loop. The kill switch, which is
+     * meant to be flipped at 3am by someone who does not want to think — and
+     * Huawei, whose ModelArts endpoint has a Java adapter here and no LangChain
+     * one. Routing Huawei back rather than failing it keeps a capability the
+     * platform already had; silently running it on another vendor would not.
+     */
+    private boolean usesRuntime(ModelVendor vendor) {
+        return config.isRuntimeEnabled() && vendor != ModelVendor.HUAWEI;
+    }
+
+    /**
+     * The loop, with the thinking done elsewhere.
+     *
+     * <p>Structurally the same as the legacy one above and deliberately so:
+     * ask what to do, do it, ask again. What changed is only WHO answers the
+     * first question. Everything that makes this loop safe — the step budget,
+     * the approval park, attaching to the run an approval started, the audit
+     * row per step — is still here, because all of it depends on the database
+     * and the approvals inbox, and neither of those crosses to Python.
+     */
+    private void driveWithRuntime(AgentRun run, Agent agent, AgentToolbox.Toolbox tools,
+                                  ModelCredentialsClient.Resolved resolved) {
+        // Finishes any turn left half-answered by an approval. Null means the
+        // run is parked again, or ended while the approval was being resolved.
+        Turn resumed = resumeTurn(run, agent, tools);
+        if (resumed.halted()) {
+            return;
+        }
+        run = resumed.run();
+        RuntimeClient.Event event = resumed.event();
+
+        while (true) {
+            if (run.getStepCount() >= run.getMaxSteps()) {
+                finish(run, AgentRun.Status.FAILED, run.getOutput(),
+                        "Reached the limit of " + run.getMaxSteps() + " steps without "
+                                + "finishing. The work it did up to that point is in the "
+                                + "steps below.");
+                return;
+            }
+
+            long began = System.currentTimeMillis();
+            RuntimeClient.Reduction reduction = runtime.reduce(new RuntimeClient.Request(
+                    run.getId(), run.getTenantId(), graphRefOf(agent), agent.getGraphVersion(),
+                    run.getModel(), resolved.vendor(), resolved.credentials(),
+                    // Only a legacy JSON agent has a persona in the tenant's
+                    // row. A Python-authored one carries its own, in the
+                    // runtime's image, and this is null.
+                    agent.getGraphRef() == null ? agent.getInstructions() : null,
+                    run.getTranscript(), event, tools.offered(), tools.skipped()));
+
+            run.setTranscript(reduction.state());
+            run.setStateVersion(reduction.stateVersion());
+            run.setPhase(reduction.phase());
+            if (reduction.traceId() != null) {
+                run.setTraceId(reduction.traceId());
+            }
+            // Advanced by the model calls the reduce ACTUALLY made, not by one.
+            // A reduce can span several phases — triage straight into gather is
+            // two — so counting reduces would let a phased agent make several
+            // times the allowance the budget was set to give it.
+            run.setStepCount(run.getStepCount() + reduction.modelCalls());
+            run.setPromptTokens(run.getPromptTokens() + reduction.promptTokens());
+            run.setCompletionTokens(run.getCompletionTokens() + reduction.completionTokens());
+            run = save(run);
+
+            recordStep(run, AgentRunStep.Kind.MODEL_CALL, null, null, null,
+                    "step " + run.getStepCount() + " of " + run.getMaxSteps()
+                            + " — phase " + reduction.phase(),
+                    describe(reduction), reduction.failed(),
+                    System.currentTimeMillis() - began);
+
+            switch (reduction.directive()) {
+                case FAIL -> {
+                    finish(run, AgentRun.Status.FAILED, reduction.output(), reduction.error());
+                    return;
+                }
+                case FINISH -> {
+                    finishFromRuntime(run, reduction);
+                    return;
+                }
+                case CALL_TOOLS -> {
+                    Turn turn = dispatchAll(run, agent, tools, reduction);
+                    if (turn.halted()) {
+                        // Parked on a human. The partial results are stashed on
+                        // the run; resumeTurn picks them up whenever the
+                        // approval is decided.
+                        return;
+                    }
+                    run = turn.run();
+                    event = turn.event();
+                }
+            }
+        }
+    }
+
+    /**
+     * A turn's outcome, and the run row as it now stands.
+     *
+     * <p>The run travels back because {@code save} is a merge outside any
+     * transaction, so it can hand back a DIFFERENT instance from the one it was
+     * given. A caller that kept its own reference across a helper that saved
+     * would go on reading a row that no longer reflects the database — and the
+     * fields it would be wrong about are exactly the ones that decide whether a
+     * tool runs again.
+     *
+     * @param event what to send the runtime next, or null when the run has
+     *              halted — parked on a human, or already ended
+     */
+    private record Turn(AgentRun run, RuntimeClient.Event event) {
+
+        boolean halted() {
+            return event == null;
+        }
+
+        static Turn halted(AgentRun run) {
+            return new Turn(run, null);
+        }
+    }
+
+    /** Runs every tool the runtime asked for. */
+    private Turn dispatchAll(AgentRun run, Agent agent, AgentToolbox.Toolbox tools,
+                             RuntimeClient.Reduction reduction) {
+        // Written down BEFORE the first tool runs. If this process dies
+        // halfway through a three-tool turn, the resume path has to know what
+        // was asked for — the runtime's state has it too, but that state is
+        // opaque here, and re-asking the runtime would re-run the tools that
+        // already went.
+        run.setPendingCalls(writeJson(reduction.toolCalls()));
+        run.setPendingResults(null);
+        run = save(run);
+
+        List<RuntimeClient.Result> results = new ArrayList<>();
+        for (ToolCall call : reduction.toolCalls()) {
+            Outcome outcome = invoke(run, agent, tools, call);
+            if (outcome.parked()) {
+                run.setStatus(AgentRun.Status.AWAITING_APPROVAL);
+                run.setApprovalReference(String.valueOf(outcome.approvalId()));
+                run.setPendingToolId(call.id());
+                run.setPendingResults(writeJson(results));
+                log.info("Agent run {} parked on approval {} for {}",
+                        run.getId(), outcome.approvalId(), call.name());
+                return Turn.halted(save(run));
+            }
+            results.add(resultOf(call.id(), outcome));
+            // Saved after each one, so a crash costs at most the tool that was
+            // in flight rather than every tool in the turn.
+            run.setPendingResults(writeJson(results));
+            run = save(run);
+        }
+
+        return new Turn(clearPending(run), new RuntimeClient.Event.ToolResults(results));
+    }
+
+    /**
+     * Finishes an approval-interrupted turn, or reports there was none.
+     *
+     * @return the event to send the runtime, or null when the run cannot
+     *         proceed right now — still parked, or already ended
+     */
+    private Turn resumeTurn(AgentRun run, Agent agent, AgentToolbox.Toolbox tools) {
+        if (run.getPendingCalls() == null || run.getPendingCalls().isBlank()) {
+            return new Turn(run, new RuntimeClient.Event.Start(run.getInput()));
+        }
+
+        List<ToolCall> calls = readCalls(run.getPendingCalls());
+        List<RuntimeClient.Result> results = new ArrayList<>(readResults(run.getPendingResults()));
+        Set<String> answered = new HashSet<>();
+        results.forEach(result -> answered.add(result.callId()));
+
+        // The call a human was deciding is resolved FIRST — that decision is
+        // what the run was waiting for, and it belongs in this same turn.
+        if (run.getApprovalReference() != null && run.getPendingToolId() != null) {
+            ToolCall pending = find(calls, run.getPendingToolId());
+            Resolution resolution = resolveApproval(run, pending);
+            if (resolution.stillWaiting()) {
+                return Turn.halted(run);
+            }
+            results.add(resultOf(run.getPendingToolId(), resolution));
+            answered.add(run.getPendingToolId());
+            run.setApprovalReference(null);
+            run.setPendingToolId(null);
+            run.setPendingResults(writeJson(results));
+            run = save(run);
+
+            // resolveApproval can END the run — an approval nobody decided in
+            // time is abandoned there. Without this check the loop would carry
+            // on and dispatch the REST of the turn's tool calls on a run that
+            // is already FAILED, executing automations for a run that was
+            // given up on.
+            if (run.getStatus().isTerminal()) {
+                return Turn.halted(run);
+            }
+        }
+
+        for (ToolCall call : calls) {
+            if (answered.contains(call.id())) {
+                continue;
+            }
+            Outcome outcome = invoke(run, agent, tools, call);
+            if (outcome.parked()) {
+                run.setStatus(AgentRun.Status.AWAITING_APPROVAL);
+                run.setApprovalReference(String.valueOf(outcome.approvalId()));
+                run.setPendingToolId(call.id());
+                run.setPendingResults(writeJson(results));
+                return Turn.halted(save(run));
+            }
+            results.add(resultOf(call.id(), outcome));
+            run.setPendingResults(writeJson(results));
+            run = save(run);
+        }
+
+        return new Turn(clearPending(run), new RuntimeClient.Event.ToolResults(results));
+    }
+
+    /**
+     * Ends a run the runtime says is finished, after checking its citations.
+     *
+     * <p>The runtime enforces the evidence rule itself; this is the second,
+     * independent check, and it is the one that cannot be talked around. It
+     * compares every cited id against the step rows THIS run actually wrote,
+     * so an id the runtime somehow let through — a bug there, a stale state, a
+     * model that guessed a plausible number — still cannot reach an operator
+     * looking like a verified fact.
+     */
+    private void finishFromRuntime(AgentRun run, RuntimeClient.Reduction reduction) {
+        List<String> problems = new ArrayList<>(reduction.uncitedClaims());
+
+        if (!reduction.citations().isEmpty()) {
+            Set<Long> real = new HashSet<>(stepRepository.findIdsByRunId(run.getId()));
+            for (Long cited : reduction.citations()) {
+                if (!real.contains(cited)) {
+                    problems.add("[e:" + cited + "] is not a step of this run.");
+                }
+            }
+        }
+
+        String output = reduction.output();
+        if (!problems.isEmpty()) {
+            run.setUncitedClaims(String.join("\n", problems));
+            log.warn("Agent run {} reported {} unsupported claim(s)", run.getId(), problems.size());
+        }
+        // Still a SUCCESS. The run did the work and produced a report; the
+        // report simply carries a visible warning about the parts it could not
+        // substantiate. Failing it would leave the operator with nothing
+        // during exactly the incident they needed it for.
+        finish(run, AgentRun.Status.SUCCEEDED, output, null);
+    }
+
+    private AgentRun clearPending(AgentRun run) {
+        run.setPendingCalls(null);
+        run.setPendingResults(null);
+        return save(run);
+    }
+
+    /** A tool that ran on its own, in the shape the evidence ledger wants. */
+    private static RuntimeClient.Result resultOf(String callId, Outcome outcome) {
+        ToolResult result = outcome.result();
+        return new RuntimeClient.Result(callId, !result.isError(), result.content(),
+                outcome.evidenceId(), null, null);
+    }
+
+    /**
+     * A tool that went through the approvals inbox.
+     *
+     * <p>The verdict travels ON the result rather than as its own event,
+     * because a turn can hold several tool calls and every vendor requires
+     * them answered together — the turn where a human rejected the second of
+     * three still has to carry the other two. The runtime lifts the decision
+     * off the result and routes on it: a rejection goes to the report, never
+     * back to planning a different way in.
+     */
+    private static RuntimeClient.Result resultOf(String callId, Resolution resolution) {
+        ToolResult result = resolution.result();
+        return new RuntimeClient.Result(callId, !result.isError(), result.content(),
+                resolution.evidenceId(),
+                Boolean.TRUE.equals(resolution.approved()) ? "APPROVED" : "REJECTED",
+                resolution.decidedBy());
+    }
+
+    private List<ToolCall> readCalls(String json) {
+        try {
+            return objectMapper.readValue(json, new TypeReference<List<ToolCall>>() { });
+        } catch (Exception ex) {
+            log.warn("Unreadable pending tool calls on a run: {}", ex.getMessage());
+            return List.of();
+        }
+    }
+
+    private List<RuntimeClient.Result> readResults(String json) {
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<List<RuntimeClient.Result>>() { });
+        } catch (Exception ex) {
+            log.warn("Unreadable pending tool results on a run: {}", ex.getMessage());
+            return List.of();
+        }
+    }
+
+    /** Which module in the runtime's registry runs this agent. */
+    private static String graphRefOf(Agent agent) {
+        return agent.getGraphRef() == null || agent.getGraphRef().isBlank()
+                ? null : agent.getGraphRef();
+    }
+
+    private String describe(RuntimeClient.Reduction reduction) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("phase", reduction.phase());
+        summary.put("directive", reduction.directive().name());
+        summary.put("output", reduction.output());
+        summary.put("error", reduction.error());
+        summary.put("toolCalls", reduction.toolCalls().stream()
+                .map(call -> Map.of("name", call.name(), "arguments", call.arguments()))
+                .toList());
+        summary.put("promptTokens", reduction.promptTokens());
+        summary.put("completionTokens", reduction.completionTokens());
+        summary.put("modelCalls", reduction.modelCalls());
+        summary.put("traceId", reduction.traceId());
+        return writeJson(summary);
     }
 
     /**
@@ -397,20 +754,37 @@ public class AgentRunService {
 
     // -------------------------------------------------------------- tool ---
 
-    /** @param approvalId set only when {@code parked} */
-    private record Outcome(ToolResult result, Long approvalId) {
+    /**
+     * What a tool call produced.
+     *
+     * @param approvalId set only when {@code parked}
+     * @param evidenceId the step row recording the result, which the report is
+     *                   allowed to cite. Null when the call never reached a
+     *                   tool — an unknown name, say — because there is then no
+     *                   observation to point at, and a citation an operator
+     *                   cannot open is worse than none.
+     */
+    private record Outcome(ToolResult result, Long approvalId, Long evidenceId) {
 
         boolean parked() {
             return approvalId != null;
         }
 
         static Outcome of(ToolResult result) {
-            return new Outcome(result, null);
+            return new Outcome(result, null, null);
+        }
+
+        static Outcome of(Observed observed) {
+            return new Outcome(observed.result(), null, observed.evidenceId());
         }
 
         static Outcome park(Long approvalId) {
-            return new Outcome(null, approvalId);
+            return new Outcome(null, approvalId, null);
         }
+    }
+
+    /** A tool result together with the audit row that proves it happened. */
+    private record Observed(ToolResult result, Long evidenceId) {
     }
 
     private Outcome invoke(AgentRun run, Agent agent, AgentToolbox.Toolbox tools, ToolCall call) {
@@ -463,7 +837,7 @@ public class AgentRunService {
      * way to call back into a specific paused loop, and adding one would mean
      * this service could only be run as a single instance.
      */
-    private ToolResult watch(AgentRun run, AgentToolbox.Tool tool, String toolCallId,
+    private Observed watch(AgentRun run, AgentToolbox.Tool tool, String toolCallId,
                              Long targetRunId, long began) {
         Instant deadline = Instant.now().plus(config.getToolTimeout());
         AutomationClient.RunState state = null;
@@ -488,9 +862,9 @@ public class AgentRunService {
                     + "\" is still running after "
                     + config.getToolTimeout().toMinutes() + " minutes. It has not failed — "
                     + "it is still in progress and can be watched in the Runs view.";
-            recordStep(run, AgentRunStep.Kind.TOOL_RESULT, tool.type(), tool.targetId(),
-                    tool.targetName(), null, message, false, took);
-            return ToolResult.ok(toolCallId, message);
+            Long evidenceId = recordStep(run, AgentRunStep.Kind.TOOL_RESULT, tool.type(),
+                    tool.targetId(), tool.targetName(), null, message, false, took);
+            return new Observed(ToolResult.ok(toolCallId, message), evidenceId);
         }
 
         String summary = "Run #" + targetRunId + " for \"" + tool.targetName() + "\" finished "
@@ -501,27 +875,40 @@ public class AgentRunService {
                 + "\nLog:\n" + (state.log() == null || state.log().isBlank()
                         ? "(no output)" : state.log());
 
-        recordStep(run, AgentRunStep.Kind.TOOL_RESULT, tool.type(), tool.targetId(),
-                tool.targetName(), null, summary, !state.succeeded(), took);
+        Long evidenceId = recordStep(run, AgentRunStep.Kind.TOOL_RESULT, tool.type(),
+                tool.targetId(), tool.targetName(), null, summary, !state.succeeded(), took);
 
         // A failed automation is reported through is_error so the model treats
-        // it as a failure rather than as text that happens to mention one.
-        return state.succeeded()
+        // it as a failure rather than as text that happens to mention one. It
+        // still carries an evidence id: "the check failed" is an observation,
+        // and an agent must be able to cite it rather than reporting a host as
+        // healthy because the collection errored.
+        return new Observed(state.succeeded()
                 ? ToolResult.ok(toolCallId, summary)
-                : ToolResult.error(toolCallId, summary);
+                : ToolResult.error(toolCallId, summary), evidenceId);
     }
 
     // ---------------------------------------------------------- approval ---
 
-    private record Resolution(ToolResult result) {
+    private record Resolution(ToolResult result, Long evidenceId, Boolean approved,
+                              String decidedBy) {
+
+        Resolution(ToolResult result) {
+            this(result, null, null, null);
+        }
 
         boolean stillWaiting() {
             return result == null;
         }
 
         static Resolution waiting() {
-            return new Resolution(null);
+            return new Resolution(null, null, null, null);
         }
+    }
+
+    /** Who decided, or a neutral stand-in when core did not record a name. */
+    private static String decidedBy(AutomationClient.ApprovalState approval) {
+        return approval.decidedBy() == null ? "An admin" : approval.decidedBy();
     }
 
     private Resolution resolveApproval(AgentRun run, ToolCall pending) {
@@ -562,30 +949,32 @@ public class AgentRunService {
 
         if (!approval.approved()) {
             String who = approval.decidedBy() == null ? "An admin" : approval.decidedBy();
-            recordStep(run, AgentRunStep.Kind.APPROVAL_GRANTED, null, null, null, null,
-                    who + " rejected the request.", true, null);
+            Long evidenceId = recordStep(run, AgentRunStep.Kind.APPROVAL_GRANTED, null, null, null,
+                    null, who + " rejected the request.", true, null);
             return new Resolution(ToolResult.error(toolCallId,
                     who + " REJECTED this request, so the automation did not run. Do not try "
-                            + "to run it again — report the rejection."));
+                            + "to run it again — report the rejection."), evidenceId, false, who);
         }
 
-        recordStep(run, AgentRunStep.Kind.APPROVAL_GRANTED, null, null, null, null,
+        Long grantedId = recordStep(run, AgentRunStep.Kind.APPROVAL_GRANTED, null, null, null, null,
                 (approval.decidedBy() == null ? "An admin" : approval.decidedBy())
                         + " approved the request; run #" + approval.runId() + " started.",
                 false, null);
 
         if (approval.runId() == null) {
             return new Resolution(ToolResult.error(toolCallId,
-                    "The request was approved but no run was recorded against it."));
+                    "The request was approved but no run was recorded against it."),
+                    grantedId, true, decidedBy(approval));
         }
 
         // Approving STARTED the run in core-service. Attaching to it is the
         // point: starting another here would run the automation twice.
         AgentToolbox.Tool tool = new AgentToolbox.Tool("approved", null, null,
                 approval.targetName() == null
-                        ? "the approved automation" : approval.targetName());
-        return new Resolution(watch(run, tool, toolCallId, approval.runId(),
-                System.currentTimeMillis()));
+                        ? "the approved automation" : approval.targetName(), true);
+        Observed observed = watch(run, tool, toolCallId, approval.runId(),
+                System.currentTimeMillis());
+        return new Resolution(observed.result(), observed.evidenceId(), true, decidedBy(approval));
     }
 
     /**
@@ -717,7 +1106,15 @@ public class AgentRunService {
         return runRepository.save(run);
     }
 
-    private void recordStep(AgentRun run, AgentRunStep.Kind kind, String toolType,
+    /**
+     * @return the id of the row just written — the EVIDENCE ID.
+     *
+     * <p>A TOOL_RESULT row's primary key is what the Python runtime's evidence
+     * ledger cites, and what an operator clicks through to from a report. That
+     * is the whole reason the ledger needs no table of its own: it indexes rows
+     * this loop was already writing for the audit trail.
+     */
+    private Long recordStep(AgentRun run, AgentRunStep.Kind kind, String toolType,
                               Long toolTargetId, String toolName, String request,
                               String response, boolean error, Long durationMs) {
         AgentRunStep step = new AgentRunStep();
@@ -731,7 +1128,7 @@ public class AgentRunService {
         step.setResponse(response);
         step.setError(error);
         step.setDurationMs(durationMs);
-        stepRepository.save(step);
+        return stepRepository.save(step).getId();
     }
 
     /**

@@ -104,8 +104,12 @@ function AgentCards({ agents, loading, onOpen, onRollOut, page, pageSize, total,
               </div>
 
               <div className="mt-5 flex items-center justify-between gap-2 border-t border-slate-200 pt-4">
+                {/* `rollouts`, not `installs`. installs counts SCRIPT imports
+                    and is never touched by a rollout, so an agent delivered to
+                    ten customers still read "0 rollouts". This is counted live
+                    from the delivered copies, so revoking one takes it down. */}
                 <span className="text-xs text-slate-500">
-                  {a.installs ?? 0} rollout{(a.installs ?? 0) === 1 ? "" : "s"}
+                  {a.rollouts ?? 0} rollout{(a.rollouts ?? 0) === 1 ? "" : "s"}
                 </span>
                 <div onClick={(e) => e.stopPropagation()}>
                   <SmallButton
@@ -275,7 +279,7 @@ export default function ProviderLibrary() {
               icon="cloud"
               onClick={() => navigate("/provider/library/workflow/publish")}
             >
-              Publish from Dify
+              Publish
             </SmallButton>
             <SmallButton
               icon="blocks"
@@ -405,13 +409,24 @@ export default function ProviderLibrary() {
                 ),
               },
               {
+                // Two different numbers, and calling both "Installs" hid that.
+                // A script is IMPORTED by a customer (installs); a workflow or
+                // agent is DELIVERED by the provider (rollouts). Neither
+                // counter is ever populated by the other's action, so showing
+                // one column for both meant whichever type you were looking at,
+                // the number was zero.
                 key: "installs",
-                label: "Installs",
-                render: (r) => (
-                  <span className="text-sm text-slate-500">
-                    {r.installs ?? 0}
-                  </span>
-                ),
+                label: "Delivered",
+                render: (r) =>
+                  r.type === "script" ? (
+                    <span className="text-sm text-slate-500">
+                      {r.installs ?? 0} import{(r.installs ?? 0) === 1 ? "" : "s"}
+                    </span>
+                  ) : (
+                    <span className="text-sm text-slate-500">
+                      {r.rollouts ?? 0} rollout{(r.rollouts ?? 0) === 1 ? "" : "s"}
+                    </span>
+                  ),
               },
               {
                 key: "managed",
@@ -490,7 +505,12 @@ export default function ProviderLibrary() {
                   ["Type", selectedItem.type || "script"],
                   ["Category", selectedItem.category],
                   ["Tier", selectedItem.premium ? "Premium" : "Standard"],
-                  ["Installs", String(selectedItem.installs ?? 0)],
+                  // Scripts are imported by customers; workflows and agents are
+                  // delivered by rollout. Different counters, so name the one
+                  // that actually applies rather than always saying "Installs".
+                  selectedItem.type === "script"
+                    ? ["Imports", String(selectedItem.installs ?? 0)]
+                    : ["Rollouts", String(selectedItem.rollouts ?? 0)],
                 ].map(([label, value]) => (
                   <div key={label}>
                     <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">

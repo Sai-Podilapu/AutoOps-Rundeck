@@ -22,6 +22,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * Template catalog + the tenant's imports. Cloning a premium template is
@@ -40,19 +41,35 @@ public class LibraryController {
         this.auditService = auditService;
     }
 
+    /**
+     * @param installs times a SCRIPT has been imported into a workspace — a
+     *                 counter, incremented by LibraryService.clone().
+     * @param rollouts how many customer copies of a WORKFLOW or AGENT exist
+     *                 right now. Counted live from the services that hold them,
+     *                 so revoking a delivery takes it back down. Zero for
+     *                 everyone but a PROVIDER: it discloses how many customers
+     *                 hold each template, which is the provider's business and
+     *                 not a tenant's.
+     */
     public record LibraryItemResponse(Long id, String title, String description, String type,
                                       String category, boolean premium, boolean managed,
                                       boolean owned, boolean locked, int installs,
-                                      String definition) {
+                                      long rollouts, String definition) {
 
-        static LibraryItemResponse from(LibraryService.LibraryView view) {
+        static LibraryItemResponse from(LibraryService.LibraryView view,
+                                        Map<String, Long> rolloutCounts) {
             LibraryItem i = view.item();
             return new LibraryItemResponse(i.getId(), i.getTitle(), i.getDescription(),
                     i.getType().name().toLowerCase(Locale.ROOT), i.getCategory(),
                     i.isPremium(), view.managed(), view.owned(), view.locked(),
                     i.getInstalls(),
+                    rolloutCounts.getOrDefault(String.valueOf(i.getId()), 0L),
                     // Definitions of LOCKED premium templates stay server-side.
                     view.locked() ? null : i.getDefinition());
+        }
+
+        static LibraryItemResponse from(LibraryService.LibraryView view) {
+            return from(view, Map.of());
         }
     }
 
@@ -63,10 +80,21 @@ public class LibraryController {
                                         @NotBlank String definition) {
     }
 
+    /**
+     * The catalog plus this workspace's own copies.
+     *
+     * <p>Serves the provider's library screen too, which is why the rollout
+     * count is fetched here — and only for a PROVIDER. Asking for it on every
+     * tenant's library page would put two cross-service calls on a hot read and
+     * disclose the provider's per-template customer counts to customers.
+     */
     @GetMapping
     public List<LibraryItemResponse> list(@AuthenticationPrincipal Jwt jwt) {
+        Map<String, Long> rollouts = "PROVIDER".equals(jwt.getClaimAsString("role"))
+                ? libraryService.rolloutCounts()
+                : Map.of();
         return libraryService.list(tenant(jwt), jwt.getTokenValue()).stream()
-                .map(LibraryItemResponse::from).toList();
+                .map(view -> LibraryItemResponse.from(view, rollouts)).toList();
     }
 
     @PostMapping("/{id}/clone")
@@ -79,7 +107,9 @@ public class LibraryController {
         return new LibraryItemResponse(copy.getId(), copy.getTitle(), copy.getDescription(),
                 copy.getType().name().toLowerCase(Locale.ROOT), copy.getCategory(),
                 copy.isPremium(), false, true, false, copy.getInstalls(),
-                copy.getDefinition());
+                // A workspace's own copy is not a catalog item, so nothing was
+                // ever rolled out FROM it.
+                0L, copy.getDefinition());
     }
 
     @PostMapping
@@ -94,7 +124,7 @@ public class LibraryController {
         return new LibraryItemResponse(item.getId(), item.getTitle(), item.getDescription(),
                 item.getType().name().toLowerCase(Locale.ROOT), item.getCategory(),
                 item.isPremium(), false, true, false, item.getInstalls(),
-                item.getDefinition());
+                0L, item.getDefinition());
     }
 
     /** Every field optional — a rename need not resend the whole script. */
@@ -121,7 +151,7 @@ public class LibraryController {
         return new LibraryItemResponse(item.getId(), item.getTitle(), item.getDescription(),
                 item.getType().name().toLowerCase(Locale.ROOT), item.getCategory(),
                 item.isPremium(), false, true, false, item.getInstalls(),
-                item.getDefinition());
+                0L, item.getDefinition());
     }
 
     private String tenant(Jwt jwt) {

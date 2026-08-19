@@ -22,9 +22,14 @@ export function useCollection(resource, projectId, filter) {
       const data = filterKey
         ? await api.list(resource, projectId, JSON.parse(filterKey))
         : await api.list(resource, projectId);
-      setRows(Array.isArray(data) ? data : []);
+      const next = Array.isArray(data) ? data : [];
+      setRows(next);
+      // Returned as well as stored: a caller polling for a change cannot read
+      // the state it just set, and re-fetching to see it would double the load.
+      return next;
     } catch (e) {
       setError(e.message || "Failed to load");
+      return null;
     } finally {
       setLoading(false);
     }

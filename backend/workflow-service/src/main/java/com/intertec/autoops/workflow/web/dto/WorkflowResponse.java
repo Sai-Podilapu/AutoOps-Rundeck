@@ -40,6 +40,8 @@ public record WorkflowResponse(
         Integer successRate,
         Instant lastRunAt,
         Long avgDurationMs,
+        /** A run is in flight right now — drives the console's live badge. */
+        boolean running,
         String createdBy,
         Instant createdAt,
         Instant updatedAt) {
@@ -66,6 +68,7 @@ public record WorkflowResponse(
                 stats != null ? stats.successRate() : null,
                 stats != null ? stats.lastRunAt() : null,
                 stats != null ? stats.avgDurationMs() : null,
+                stats != null && stats.running(),
                 workflow.getCreatedBy(), workflow.getCreatedAt(), workflow.getUpdatedAt());
     }
 }
