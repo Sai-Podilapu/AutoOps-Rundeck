@@ -354,7 +354,16 @@ class AgentDescriptor(BaseModel):
     un-exposed by an API.
     """
 
-    ref: str
+    #: Which module in the registry runs this agent, or NULL for a JSON-persona
+    #: agent that has no graph of its own.
+    #:
+    #: Nullable on purpose, and it has to be: agent-service sends null for
+    #: every agent whose `graph_ref` column is unset, which is the ordinary
+    #: case for one a customer built. :func:`agents.resolve` already maps None
+    #: onto the single-phase compatibility agent — declaring this required
+    #: rejected the request before it ever got there, with a 422 that said
+    #: nothing about which agent or why.
+    ref: str | None = None
     version: str | None = None
     model: str
     vendor: Vendor

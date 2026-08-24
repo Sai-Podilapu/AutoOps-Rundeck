@@ -100,6 +100,18 @@ public class DifyWorkflowService {
     }
 
     /**
+     * As {@link #run}, reporting each workflow node as it starts and finishes.
+     *
+     * <p>The execution engine passes a listener that writes those events into
+     * the run log, which is what lets a customer watch a twenty-minute workflow
+     * progress instead of staring at a spinner that never moves.
+     */
+    public DifyAppClient.RunOutcome run(String slug, Map<String, Object> inputs, String user,
+                                        DifyAppClient.Progress progress) {
+        return client.run(requireKey(slug), inputs, user, progress);
+    }
+
+    /**
      * Rejects a run that is missing a required value BEFORE it reaches Dify.
      * Dify would otherwise run the workflow with the variable unset, which
      * usually succeeds and produces nonsense rather than failing.

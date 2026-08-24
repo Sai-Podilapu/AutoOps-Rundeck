@@ -1,0 +1,88 @@
+server:
+  port: ${SERVER_PORT:8090}
+
+spring:
+  application:
+    name: rundeck-service
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:autoops_rundeck}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+    username: ${DB_USER:autoops}
+    password: ${DB_PASSWORD:autoops}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate.jdbc.time_zone: UTC
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+autoops:
+  rundeck:
+    jwks-uri: ${AUTH_JWKS_URI:http://localhost:8081/oauth2/jwks}
+    issuer: ${JWT_ISSUER:autoops-auth-service}
+    # Shared secret this service REQUIRES on its own /internal/** endpoints.
+    # core-service calls those to run a Rundeck job as a workflow step.
+    internal-token: ${RUNDECK_INTERNAL_TOKEN:dev-internal-token}
+    # AES-256-GCM key, retained for future at-rest secrets in this service.
+    # Nothing currently uses it: the platform engine's token comes from the
+    # environment below, not from a database row.
+    credential-key: ${RUNDECK_CRED_KEY:dev-rundeck-cred-key}
+    # THE ENGINE. One Rundeck behind the whole product.
+    #
+    # These are the white-label boundary. There is no table holding them, no
+    # endpoint returning them and no screen rendering them — a tenant cannot
+    # learn the engine exists from anything AutoOps serves them.
+    platform:
+      url: ${RUNDECK_URL:http://localhost:4440}
+      api-token: ${RUNDECK_API_TOKEN:}
+      api-version: ${RUNDECK_API_VERSION:41}
+      # Prefix on every project this platform creates, so an operator can write
+      # one ACL glob over all of them.
+      project-prefix: ${RUNDECK_PROJECT_PREFIX:autoops}
+      # Ceiling on ONE step, mirroring job-service's hard cap. A step that hits
+      # it is aborted upstream, never abandoned mid-change.
+      step-timeout: ${RUNDECK_STEP_TIMEOUT:10m}
+      poll-interval: ${RUNDECK_POLL_INTERVAL:2s}
+    subscription:
+      base-url: ${SUBSCRIPTION_SERVICE_URL:http://localhost:8082}
+      connect-timeout: ${SUBSCRIPTION_CONNECT_TIMEOUT:2s}
+      read-timeout: ${SUBSCRIPTION_READ_TIMEOUT:3s}
+      # FAIL-CLOSED default: mutations are denied when subscription-service is down.
+      entitlement-fail-open: ${ENTITLEMENT_FAIL_OPEN:false}
+    # core-service owns projects and the audit trail; this service writes its
+    # events back there so the platform keeps ONE trail.
+    core:
+      base-url: ${CORE_SERVICE_URL:http://localhost:8083}
+      internal-token: ${CORE_INTERNAL_TOKEN:dev-internal-token}
+      connect-timeout: ${CORE_CONNECT_TIMEOUT:2s}
+      read-timeout: ${CORE_READ_TIMEOUT:5s}
+    # Bounds on every OUTBOUND call to a customer's Rundeck. That server is
+    # not ours and may be slow, unreachable or hostile — no call to it may
+    # ever hang a request thread here.
+    upstream:
+      connect-timeout: ${RUNDECK_CONNECT_TIMEOUT:5s}
+      read-timeout: ${RUNDECK_READ_TIMEOUT:20s}
+      # Rundeck's API version segment: /api/{version}/... Overridable per
+      # connection, because a customer on an older server needs a lower one.
+      default-api-version: ${RUNDECK_API_VERSION:41}
+      # Log relay cap per poll. Rundeck will happily return an entire
+      # execution log; the console only ever renders a window of it.
+      max-log-lines: ${RUNDECK_MAX_LOG_LINES:500}
+      # Refuse plain http:// upstreams unless explicitly allowed. An API token
+      # travels on every call, so a cleartext upstream leaks fleet control.
+      allow-insecure: ${RUNDECK_ALLOW_INSECURE:true}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html

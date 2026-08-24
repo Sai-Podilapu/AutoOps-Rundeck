@@ -1,0 +1,76 @@
+{
+  "name": "Single-phase agent — asks for a tool, then answers from its result",
+  "_why": [
+    "The compatibility path, which is now the only one: a JSON-persona agent",
+    "running the un-phased loop. It pins the reducer contract itself — START",
+    "yields CALL_TOOLS, the tool result comes back, and the run FINISHes with",
+    "the model's answer. No phase narrowing and no evidence enforcement, which",
+    "is deliberate: these agents' prompts were never written for citations."
+  ],
+  "agent": {
+    "ref": "generic.single_phase",
+    "version": "1.0.0",
+    "model": "claude-sonnet-5",
+    "vendor": "ANTHROPIC"
+  },
+  "tools": [
+    {
+      "name": "workflow_42",
+      "description": "Runs the automation \"Marketing Research\". Returns the run outcome and its full output.",
+      "input_schema": {
+        "type": "object",
+        "properties": { "Topic": { "type": "string", "description": "What to research" } },
+        "required": ["Topic"]
+      },
+      "mutating": true
+    }
+  ],
+  "steps": [
+    {
+      "event": { "kind": "START", "input": "Research the UAE managed-services market." },
+      "script": [
+        {
+          "type": "reply",
+          "text": "Running the research automation.",
+          "tool_calls": [
+            { "name": "workflow_42", "args": { "Topic": "UAE managed-services market" }, "id": "toolu_x1" }
+          ],
+          "input_tokens": 320,
+          "output_tokens": 40
+        }
+      ],
+      "expect": {
+        "directive": "CALL_TOOLS",
+        "phase": "RESPOND",
+        "tool_calls": ["workflow_42"]
+      }
+    },
+    {
+      "event": {
+        "kind": "TOOL_RESULTS",
+        "results": [
+          {
+            "call_id": "toolu_x1",
+            "ok": true,
+            "evidence_id": 77,
+            "content": "Run #501 finished SUCCEEDED.\nMarket size 2026: $1.2bn, growing 11% YoY."
+          }
+        ]
+      },
+      "script": [
+        {
+          "type": "reply",
+          "text": "The UAE managed-services market is $1.2bn in 2026, growing 11% year on year.",
+          "input_tokens": 460,
+          "output_tokens": 32
+        }
+      ],
+      "expect": {
+        "directive": "FINISH",
+        "phase": "DONE",
+        "tool_calls": [],
+        "output_contains": ["$1.2bn"]
+      }
+    }
+  ]
+}

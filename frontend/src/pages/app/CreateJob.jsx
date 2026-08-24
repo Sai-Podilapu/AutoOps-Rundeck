@@ -10,10 +10,23 @@ import Icon from "../../components/Icon";
 import { api } from "../../lib/api";
 import { useStore } from "../../store/store";
 import { planAllows } from "../../lib/entitlements";
+import JobOptionsTab from "../../components/app/job/JobOptionsTab";
+import JobNodesTab from "../../components/app/job/JobNodesTab";
+import JobScheduleTab from "../../components/app/job/JobScheduleTab";
+import JobNotificationsTab from "../../components/app/job/JobNotificationsTab";
+import JobExecutionTab from "../../components/app/job/JobExecutionTab";
 
+// The full authoring surface. Order follows the sequence an author actually
+// works in: what it is, what it does, where it runs, when, who hears about it,
+// and how it behaves around the edges.
 const TABS = [
   "Details",
+  "Options",
   "Workflow",
+  "Nodes",
+  "Schedule",
+  "Notifications",
+  "Execution",
 ];
 
 // The typed step palette from the AutoOps designer.
@@ -93,6 +106,31 @@ export default function CreateJob() {
   const [description, setDescription] = useState("");
   const [requiresApproval, setRequiresApproval] = useState(false);
   const [steps, setSteps] = useState([]);
+  const [options, setOptions] = useState([]);
+  const [workflow, setWorkflow] = useState({ strategy: "node-first", keepgoing: false });
+  const [nodes, setNodes] = useState({
+    dispatch: false,
+    filter: "",
+    threadcount: 1,
+    keepgoing: false,
+    rankAttribute: "",
+    rankOrder: "ascending",
+  });
+  const [schedule, setSchedule] = useState("");
+  const [timezone, setTimezone] = useState("UTC");
+  const [notifications, setNotifications] = useState([]);
+  const [execution, setExecution] = useState({
+    timeoutSeconds: null,
+    retries: 0,
+    retryDelaySeconds: 0,
+    logLimit: null,
+    logLimitAction: "halt",
+    multipleExecutions: false,
+    logLevel: "INFO",
+  });
+  const [logFilters, setLogFilters] = useState([]);
+  const [channels, setChannels] = useState([]);
+  const [channelsError, setChannelsError] = useState(null);
   const [busy, setBusy] = useState(false);
   const fileInputRef = React.useRef(null);
   const isEdit = !!jid;
@@ -106,6 +144,14 @@ export default function CreateJob() {
         setDescription(job.description || "");
         setRequiresApproval(!!job.requiresApproval);
         setSteps(job.steps || []);
+        setOptions(job.options || []);
+        if (job.workflow) setWorkflow(job.workflow);
+        if (job.nodes) setNodes(job.nodes);
+        setSchedule(job.schedule || "");
+        setTimezone(job.scheduleTimezone || "UTC");
+        setNotifications(job.notifications || []);
+        if (job.execution) setExecution(job.execution);
+        setLogFilters(job.logFilters || []);
       }).catch(e => {
         pushToast(e.message || "Failed to load job", "red");
       }).finally(() => {
@@ -113,6 +159,33 @@ export default function CreateJob() {
       });
     }
   }, [jid, isEdit, pushToast]);
+
+  useEffect(() => {
+    // The workspace's installed alert channels, for the Notifications tab.
+    //
+    // DISABLED channels are kept in the list rather than filtered out. A
+    // customer who installed Slack and turned it off would otherwise open this
+    // tab, see nothing, and conclude the integration had vanished — the tab
+    // labels them instead, which is the honest version.
+    api
+      .listInstallations()
+      .then((rows) =>
+        setChannels(
+          (rows || []).map((c) => ({
+            id: c.id,
+            name: c.displayName,
+            kind: c.pluginKey,
+            enabled: c.enabled,
+          })),
+        ),
+      )
+      .catch((e) => {
+        // Distinguish "none installed" from "could not load" — the second is
+        // not the customer's configuration problem and must not read like one.
+        setChannels([]);
+        setChannelsError(e.message || "Could not load alert channels");
+      });
+  }, []);
 
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
@@ -163,6 +236,14 @@ export default function CreateJob() {
       requiresApproval,
       steps,
       stepCount: steps.length,
+      options,
+      workflow,
+      nodes,
+      schedule,
+      scheduleTimezone: timezone,
+      notifications,
+      execution,
+      logFilters,
     };
     try {
       if (isEdit) {
@@ -285,8 +366,113 @@ export default function CreateJob() {
             </Card>
           )}
 
+          {tab === "Options" && (
+            <JobOptionsTab options={options} onChange={setOptions} />
+          )}
+
+          {tab === "Nodes" && <JobNodesTab nodes={nodes} onChange={setNodes} />}
+
+          {tab === "Schedule" && (
+            <JobScheduleTab
+              schedule={schedule}
+              timezone={timezone}
+              onChange={({ schedule: next, timezone: tz }) => {
+                setSchedule(next);
+                setTimezone(tz || "UTC");
+              }}
+            />
+          )}
+
+          {tab === "Notifications" && (
+            <JobNotificationsTab
+              notifications={notifications}
+              channels={channels}
+              channelsError={channelsError}
+              onChange={setNotifications}
+            />
+          )}
+
+          {tab === "Execution" && (
+            <JobExecutionTab
+              execution={execution}
+              logFilters={logFilters}
+              onChange={setExecution}
+              onFiltersChange={setLogFilters}
+            />
+          )}
+
           {tab === "Workflow" && (
             <div className="space-y-6">
+              <Card className="p-6">
+                <h3 className="mb-4 text-sm font-semibold text-slate-900">
+                  If a step fails
+                </h3>
+                <div className="space-y-2">
+                  <label className="flex cursor-pointer items-start gap-2 text-sm text-slate-700">
+                    <input
+                      type="radio"
+                      name="keepgoing"
+                      checked={!workflow.keepgoing}
+                      onChange={() => setWorkflow({ ...workflow, keepgoing: false })}
+                      className="mt-0.5 h-4 w-4 accent-blue-600"
+                    />
+                    <span>
+                      Stop at the failed step
+                      <span className="mt-0.5 block text-[11px] text-slate-500">
+                        Nothing after it runs. The safe default for anything that
+                        changes state in order.
+                      </span>
+                    </span>
+                  </label>
+                  <label className="flex cursor-pointer items-start gap-2 text-sm text-slate-700">
+                    <input
+                      type="radio"
+                      name="keepgoing"
+                      checked={!!workflow.keepgoing}
+                      onChange={() => setWorkflow({ ...workflow, keepgoing: true })}
+                      className="mt-0.5 h-4 w-4 accent-blue-600"
+                    />
+                    <span>
+                      Run the remaining steps, then fail
+                      <span className="mt-0.5 block text-[11px] text-slate-500">
+                        Finishes the list and still reports failure — useful when
+                        the steps are independent checks.
+                      </span>
+                    </span>
+                  </label>
+                </div>
+
+                {nodes.dispatch && (
+                  <div className="mt-5 border-t border-slate-100 pt-5">
+                    <label className="mb-1.5 block text-xs font-medium text-slate-500">
+                      Order across the fleet
+                    </label>
+                    <select
+                      value={workflow.strategy || "node-first"}
+                      onChange={(e) =>
+                        setWorkflow({ ...workflow, strategy: e.target.value })
+                      }
+                      className="w-full max-w-sm rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-300 focus:ring-2 focus:ring-slate-300"
+                    >
+                      <option value="node-first">
+                        Node first — finish a node, then move on
+                      </option>
+                      <option value="step-first">
+                        Step first — run each step on every node before the next
+                      </option>
+                      <option value="parallel">Parallel — all at once</option>
+                    </select>
+                    <p className="mt-1.5 text-[11px] leading-relaxed text-slate-500">
+                      {workflow.strategy === "step-first"
+                        ? "Every node reaches the same point together — the right shape for a rolling change you may need to stop."
+                        : workflow.strategy === "parallel"
+                          ? "Fastest, and the hardest to interrupt cleanly."
+                          : "One machine is fully done before the next is touched, so a failure leaves the rest untouched."}
+                    </p>
+                  </div>
+                )}
+              </Card>
+
               <Card className="p-6">
                 <div className="mb-4 flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-slate-900">

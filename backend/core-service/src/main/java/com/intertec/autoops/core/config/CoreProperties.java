@@ -362,6 +362,19 @@ public class CoreProperties {
         /** Shared secret sent as X-Internal-Token (remote mode). */
         private String jobServiceToken = "dev-internal-token";
 
+        /**
+         * The execution engine that REPLACES job-service
+         * ({@code autoops.core.execution.mode=rundeck}).
+         *
+         * <p>This is rundeck-service's address, not Rundeck's own: core-service
+         * never speaks to the engine directly. Keeping one hop in between is
+         * what lets the engine's URL and admin token stay in a single service
+         * that no tenant-facing route reaches.
+         */
+        private String rundeckServiceUrl = "http://localhost:8090";
+
+        private String rundeckServiceToken = "dev-internal-token";
+
         /** Per-step wall-clock budget passed to job-service. */
         private Duration stepTimeout = Duration.ofSeconds(60);
 
@@ -372,6 +385,22 @@ public class CoreProperties {
         private Duration simulatedStepMinDelay = Duration.ofMillis(300);
 
         private Duration simulatedStepMaxDelay = Duration.ofMillis(1500);
+
+        public String getRundeckServiceUrl() {
+            return rundeckServiceUrl;
+        }
+
+        public void setRundeckServiceUrl(String rundeckServiceUrl) {
+            this.rundeckServiceUrl = rundeckServiceUrl;
+        }
+
+        public String getRundeckServiceToken() {
+            return rundeckServiceToken;
+        }
+
+        public void setRundeckServiceToken(String rundeckServiceToken) {
+            this.rundeckServiceToken = rundeckServiceToken;
+        }
 
         public String getMode() {
             return mode;

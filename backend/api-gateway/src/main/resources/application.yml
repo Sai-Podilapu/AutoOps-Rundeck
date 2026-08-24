@@ -54,6 +54,14 @@ spring:
             uri: ${PLUGIN_SERVICE_URL:http://localhost:8088}
             predicates:
               - Path=/api/plugins/**,/api/notification-rules/**
+          # A tenant's OWN Rundeck server: connections, job browsing, dispatch,
+          # log relay and the node inventory. Nothing under /api/rundeck/**
+          # overlaps another route's prefix, so its position here is not
+          # load-bearing — unlike the workflow-run exception above.
+          - id: rundeck-service
+            uri: ${RUNDECK_SERVICE_URL:http://localhost:8090}
+            predicates:
+              - Path=/api/rundeck/**
           # Projects, jobs, cloud integrations, runs (subscription-gated mutations).
           - id: core-service
             uri: ${CORE_SERVICE_URL:http://localhost:8083}

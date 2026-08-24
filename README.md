@@ -251,6 +251,32 @@ limits on both. MySQL `autoops_workflow`. Full detail in
   stats and `requiresApproval` are fetched per list and **degrade** to
   empty/platform-defaults so a list still renders when core-service is down.
 
+### 2.4d rundeck-service (:8090)
+
+The adapter onto a tenant's **own** Rundeck server. MySQL `autoops_rundeck`.
+Full detail in **`rundeck-service/README.md`**.
+
+- **Why an integration, not a rebuild** — AutoOps already has a step runtime,
+  a scheduler and run history. What it lacks is Rundeck's defining feature: a
+  **node inventory and dispatch model** (node filters, fan-out across hundreds
+  of hosts, a per-node result matrix). A customer who already runs Rundeck keeps
+  their runbooks, ACLs and fleet where they are and drives them from here.
+- **Stores the connection and nothing else.** Projects, jobs, options,
+  executions, logs and nodes are read **live** on every request — the Rundeck
+  console is a peer writer, so any copy would be wrong the moment someone edits
+  a job there. The one exception is a **dispatch receipt**, kept for
+  accountability: delete the connection or rotate the token and "who ran this on
+  production" still has an answer.
+- **The API token is the whole security story.** It is command execution on
+  every node a job targets, so: AES-256-GCM under its own `RUNDECK_CRED_KEY`,
+  never returned by any endpoint (only a 4-character hint), `https` enforced
+  outside dev, and secure option values redacted before a receipt is written.
+- **Running a job is a POST**, even though Rundeck exposes abort as a GET —
+  both change production state, so a VIEWER may watch a deploy and may not stop
+  it.
+- **`/internal/rundeck/dispatch`** is built and tested for a future workflow
+  step type; core-service does not call it yet.
+
 ### 2.4c agent-service (:8087)
 
 AI agents: a persona plus a **closed allow-list of tools** — the project's own
@@ -401,6 +427,7 @@ cd core-service          && mvn test    # 162 tests
 cd workflow-service      && mvn test    #  16 tests
 cd agent-service         && mvn test    #  19 tests
 cd job-service           && mvn test    #  84 tests
+cd rundeck-service       && mvn test    #  62 tests
 cd voice-agent           && mvn test    #  36 tests
 cd api-gateway           && mvn test    #  18 tests
 cd frontend-web          && npm test    # 150 tests

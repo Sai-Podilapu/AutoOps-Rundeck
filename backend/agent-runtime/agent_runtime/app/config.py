@@ -33,11 +33,23 @@ class Settings(BaseSettings):
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
 
-    #: Bounds one tool result before it enters the transcript. Factor 9: a
+    #: Bounds a FAILED tool result before it enters the transcript. Factor 9: a
     #: 40,000-line stack trace teaches a model nothing that its first and last
     #: twenty lines do not, and it crowds out the evidence that would have let
     #: it recover.
     error_excerpt_limit: int = 2000
+
+    #: Bounds a SUCCESSFUL one, and is deliberately far larger.
+    #:
+    #: The two were one setting, and that was wrong. A failed step's output is
+    #: noise to be summarised; a successful step's output is frequently the
+    #: DELIVERABLE. A research workflow returned a 50,000-character report and
+    #: it was cut to 2,000 before the model ever saw it — the agent was then
+    #: asked to hand back a report it had only been shown the first page of.
+    #:
+    #: Still bounded, because an unbounded result is a context-window overflow
+    #: waiting to happen. Raise it if your automations legitimately return more.
+    output_limit: int = 120000
 
 
 @lru_cache(maxsize=1)

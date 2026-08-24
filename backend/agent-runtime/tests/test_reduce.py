@@ -16,8 +16,34 @@ from agent_runtime.app.state import (
     ToolSpecWire,
     Vendor,
 )
+from agent_runtime import agents
+from agent_runtime.agents.spec import AgentSpec, Manifest
+from agent_runtime.graph import kit
 from agent_runtime.graph.phases import HypothesisOut, TriageOut
 from tests import fakes
+
+#: No SHIPPED agent uses the phase kit any more — the provider-authored ones
+#: were withdrawn. The kit is still runtime code, so it is exercised through an
+#: agent registered only for these tests. That keeps the coverage honest about
+#: what it covers: the kit, not a product.
+PHASED_REF = "test.phased"
+PHASES = (Phase.TRIAGE, Phase.GATHER, Phase.HYPOTHESIZE, Phase.REPORT)
+
+
+@pytest.fixture(autouse=True)
+def phased_agent(monkeypatch):
+    spec = AgentSpec(
+        manifest=Manifest(
+            ref=PHASED_REF, version="1.0.0", name="Phased test agent",
+            description="Exercises the phase kit.", domain="Test",
+            model="claude-sonnet-5",
+        ),
+        persona="You inspect one host and report what you find.",
+        build_graph=lambda: kit.build(list(PHASES)),
+        phases=PHASES,
+    )
+    monkeypatch.setitem(agents.REGISTRY, PHASED_REF, spec)
+    return spec
 
 HEALTH_CHECK = ToolSpecWire(
     name="workflow_3",
@@ -34,7 +60,7 @@ DESTRUCTIVE = ToolSpecWire(
 )
 
 
-def descriptor(ref: str = "linux.server_health_check") -> AgentDescriptor:
+def descriptor(ref: str = PHASED_REF) -> AgentDescriptor:
     return AgentDescriptor(
         ref=ref,
         version="1.0.0",
@@ -297,7 +323,7 @@ def test_unknown_agent_ref_is_refused_by_name(monkeypatch):
 
     assert response.directive is Directive.FAIL
     assert "aws.does_not_exist" in response.error
-    assert "linux.server_health_check" in response.error
+    assert "generic.single_phase" in response.error
 
 
 def test_start_against_existing_state_is_refused(monkeypatch):
@@ -332,7 +358,7 @@ def test_stale_state_version_refuses_rather_than_guessing(monkeypatch):
         ReduceRequest(
             agent=descriptor(),
             tools=[HEALTH_CHECK],
-            state={"version": 99, "agent_ref": "linux.server_health_check", "input": "x"},
+            state={"version": 99, "agent_ref": PHASED_REF, "input": "x"},
             event=ToolResultsEvent(results=[]),
         )
     )
@@ -414,3 +440,34 @@ def test_unrunnable_vendor_fails_with_a_message_naming_it(monkeypatch, vendor):
 
     assert response.directive is Directive.FAIL
     assert "HUAWEI" in response.error
+
+
+def test_a_json_persona_agent_sends_no_ref_and_still_runs(monkeypatch):
+    """The ordinary customer-built agent: no graph_ref, so `ref` is null.
+
+    agent-service sends null for every agent whose `graph_ref` column is unset.
+    Declaring `ref` required rejected those with a 422 before the registry —
+    which already maps None onto the single-phase agent — ever saw them. A real
+    run against a Dify-backed workflow is what surfaced it.
+    """
+    model = fakes.install(
+        monkeypatch, fakes.ScriptedModel(script=[fakes.reply("Report delivered.")])
+    )
+
+    response = reduce(
+        ReduceRequest(
+            agent=AgentDescriptor(
+                ref=None, model="deepseek.v3.2", vendor=Vendor.BEDROCK,
+                credentials={"accessId": "a", "secret": "b", "region": "us-east-1"},
+                instructions="You are a research analyst.",
+            ),
+            tools=[HEALTH_CHECK],
+            state=None,
+            event=StartEvent(input="Research agentic AI tools."),
+        )
+    )
+
+    assert response.directive is Directive.FINISH
+    assert response.phase is Phase.RESPOND or response.phase is Phase.DONE
+    # It resolved to the compatibility agent and used the tenant's own persona.
+    assert "You are a research analyst." in model.seen[0][0].content

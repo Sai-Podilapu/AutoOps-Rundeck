@@ -425,6 +425,32 @@ function mapJob(j) {
     schedule: j.schedule || "",
     steps: def.steps || [],
     stepCount: j.stepCount ?? (def.steps || []).length,
+    // Everything the job editor authors beyond the step list. Each block
+    // defaults rather than coming back undefined, so a job saved before these
+    // existed opens in the editor with sane values instead of blank controls.
+    options: def.options || [],
+    workflow: { strategy: "node-first", keepgoing: false, ...(def.workflow || {}) },
+    nodes: {
+      dispatch: false,
+      filter: "",
+      threadcount: 1,
+      keepgoing: false,
+      rankAttribute: "",
+      rankOrder: "ascending",
+      ...(def.nodeDispatch || {}),
+    },
+    notifications: def.notifications || [],
+    execution: {
+      timeoutSeconds: null,
+      retries: 0,
+      retryDelaySeconds: 0,
+      logLimit: null,
+      logLimitAction: "halt",
+      multipleExecutions: false,
+      logLevel: "INFO",
+      ...(def.execution || {}),
+    },
+    logFilters: def.logFilters || [],
     enabled: j.enabled,
     requiresApproval: !!j.requiresApproval,
     status: j.enabled ? (j.schedule ? "scheduled" : "active") : "paused",
@@ -438,7 +464,25 @@ function mapJob(j) {
   };
 }
 
-const jobDefinition = (body) => JSON.stringify({ steps: body.steps || [] });
+// The job definition is ONE JSON document: the step list plus every authoring
+// block the editor exposes. Blocks are omitted when empty rather than written
+// as nulls, so a simple job's definition stays as small and readable as it was
+// before any of this existed.
+const jobDefinition = (body) => {
+  const def = { steps: body.steps || [] };
+  if (body.options?.length) def.options = body.options;
+  if (body.workflow) def.workflow = body.workflow;
+  // `dispatch: false` is the default and means "run on the engine", exactly as
+  // every job did before node dispatch existed — so it is not worth persisting.
+  // `nodeDispatch`, NOT `nodes`: a WORKFLOW definition already uses `nodes` for
+  // its step array, and core-service's parser keys off that name. Reusing it
+  // here would make a job's dispatch config look like a workflow's step list.
+  if (body.nodes?.dispatch) def.nodeDispatch = body.nodes;
+  if (body.notifications?.length) def.notifications = body.notifications;
+  if (body.execution) def.execution = body.execution;
+  if (body.logFilters?.length) def.logFilters = body.logFilters;
+  return JSON.stringify(def);
+};
 
 async function listJobsReal(projectId) {
   if (projectId) {
@@ -1677,6 +1721,7 @@ export const api = {
   listCommands: () => realFetch("/commands", { auth: true }),
   dispatchCommand: (command) =>
     realFetch("/commands", { method: "POST", auth: true, body: { command } }),
+
 };
 
 // Social/SSO login. "google" and "microsoft" hit the direct OIDC flows in

@@ -1,0 +1,17 @@
+# Production overrides. ProdSafetyGuard refuses to boot if any development
+# default survives into this profile — see config/ProdSafetyGuard.java.
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+autoops:
+  rundeck:
+    upstream:
+      # A Rundeck API token is fleet-wide command execution. In prod it may
+      # only ever travel over TLS.
+      allow-insecure: false
+
+logging:
+  level:
+    com.intertec.autoops.rundeck: INFO

@@ -1,5 +1,6 @@
 package com.intertec.autoops.agent.client;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.intertec.autoops.agent.config.AgentProperties;
 import com.intertec.autoops.agent.exception.AgentException;
@@ -160,12 +161,16 @@ public class RuntimeClient {
                     .body(MAP);
         } catch (org.springframework.web.client.RestClientResponseException ex) {
             // The runtime answers 200 for anything that is a run outcome, so a
-            // status here means the request itself was rejected — a schema
-            // mismatch after a one-sided deploy, most likely. Naming that is
-            // more useful than passing the body through.
+            // status here means the REQUEST was rejected — usually a schema
+            // mismatch after a one-sided deploy.
+            //
+            // The body names the offending field; the first version of this
+            // discarded it and said only "the two services may be on different
+            // versions", which turned a one-line fix into a hunt. Whatever
+            // FastAPI says about which field it disliked is the useful part.
             throw AgentException.serviceUnavailable("runtime_rejected",
-                    "The agent runtime rejected this run (" + ex.getStatusCode()
-                            + "). The two services may be on different versions.");
+                    "The agent runtime rejected this run (" + ex.getStatusCode() + "): "
+                            + validationDetail(ex));
         } catch (Exception ex) {
             throw AgentException.serviceUnavailable("runtime_unavailable",
                     "Could not reach the agent runtime: " + ex.getMessage());
@@ -347,6 +352,41 @@ public class RuntimeClient {
             }
         }
         return values;
+    }
+
+    /**
+     * FastAPI's validation complaint, flattened to one readable line.
+     *
+     * <p>The body is {@code {"detail":[{"loc":["body","agent","ref"],"msg":…}]}}.
+     * The {@code loc} path is the whole diagnosis — it says exactly which field
+     * was wrong — so it is worth the small amount of parsing here rather than
+     * making someone reproduce the call by hand to see it.
+     */
+    private String validationDetail(
+            org.springframework.web.client.RestClientResponseException ex) {
+        String body = ex.getResponseBodyAsString();
+        if (body == null || body.isBlank()) {
+            return "no detail returned; the two services may be on different versions";
+        }
+        try {
+            JsonNode detail = objectMapper.readTree(body).path("detail");
+            if (detail.isArray() && !detail.isEmpty()) {
+                List<String> problems = new ArrayList<>();
+                for (JsonNode entry : detail) {
+                    List<String> path = new ArrayList<>();
+                    entry.path("loc").forEach(part -> path.add(part.asText()));
+                    problems.add(String.join(".", path) + ": " + entry.path("msg").asText());
+                }
+                return String.join("; ", problems);
+            }
+            if (detail.isTextual()) {
+                return detail.asText();
+            }
+        } catch (Exception ignored) {
+            // Not JSON, or not FastAPI's shape — the raw body is still better
+            // than a generic sentence.
+        }
+        return body.length() > 300 ? body.substring(0, 300) + "…" : body;
     }
 
     private static String str(Object value) {

@@ -21,7 +21,12 @@ import java.time.Duration;
  * than 500-ing on a null base URL or silently pretending the feature works.
  */
 @Component
-@ConfigurationProperties(prefix = "autoops.dify")
+// The settings live at autoops.core.dify in application.yml, alongside every
+// other core-service block. Binding "autoops.dify" matched nothing, so
+// base-url and api-key were always null and the bridge reported "Dify is not
+// connected" no matter what DIFY_BASE_URL was set to — which is why it had
+// never run against a real instance.
+@ConfigurationProperties(prefix = "autoops.core.dify")
 public class DifyProperties {
 
     /** e.g. https://dify.yourcompany.com — no trailing slash needed. */

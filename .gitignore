@@ -94,3 +94,5 @@ reports/
 *.dump
 *.sql.gz
 *.mysqldump
+# Local-only compose overrides (host port clashes, per-machine tweaks).
+docker-compose.override.yml

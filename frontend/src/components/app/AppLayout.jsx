@@ -121,7 +121,6 @@ const workspaceNav = (can, clientRole) => {
       label: "Cloud Integrations",
       icon: "cloud",
     });
-
   const account = [];
   if (can("manageBilling"))
     account.push({

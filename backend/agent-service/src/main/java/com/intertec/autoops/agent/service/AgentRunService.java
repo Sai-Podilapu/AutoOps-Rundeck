@@ -858,10 +858,23 @@ public class AgentRunService {
             // Honest, and specifically NOT reported as a failure: the run is
             // still going. Telling the model it failed would invite it to
             // "retry" work that is currently running.
+            // Worded to CLOSE the turn, not to hand the model an opening.
+            //
+            // The first version said only "it has not failed — it is still in
+            // progress and can be watched in the Runs view", and a model read
+            // that as an invitation: it called the same automation again,
+            // starting a second expensive run of a workflow that was still
+            // executing. Telling it what is true is not enough; the sentence
+            // has to say what to DO, and rule out the obvious wrong move.
             String message = "Run #" + targetRunId + " for \"" + tool.targetName()
-                    + "\" is still running after "
-                    + config.getToolTimeout().toMinutes() + " minutes. It has not failed — "
-                    + "it is still in progress and can be watched in the Runs view.";
+                    + "\" is STILL RUNNING after " + config.getToolTimeout().toMinutes()
+                    + " minutes. It has NOT failed and it has NOT finished.\n\n"
+                    + "DO NOT call this tool again. A second call starts a SECOND run of the "
+                    + "same automation while the first is still going — it does not retry it "
+                    + "and it does not speed it up.\n\n"
+                    + "Stop here. Tell the operator the automation is still running, give them "
+                    + "run #" + targetRunId + " to watch in the Runs view, and say that the "
+                    + "result will be there when it finishes.";
             Long evidenceId = recordStep(run, AgentRunStep.Kind.TOOL_RESULT, tool.type(),
                     tool.targetId(), tool.targetName(), null, message, false, took);
             return new Observed(ToolResult.ok(toolCallId, message), evidenceId);

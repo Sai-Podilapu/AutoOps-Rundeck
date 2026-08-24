@@ -65,9 +65,9 @@ def test_an_allowed_call_passes(box):
 def test_an_unknown_ref_is_refused_and_never_resolved_loosely():
     """A corrupted catalog row must not become a different agent on production."""
     with pytest.raises(agents.UnknownAgent) as caught:
-        agents.resolve("linux.server_health_chek")  # one letter out
+        agents.resolve("aws.not_a_real_agent")  # one letter out
 
-    assert "linux.server_health_chek" in str(caught.value)
+    assert "aws.not_a_real_agent" in str(caught.value)
 
 
 def test_no_ref_resolves_to_the_compatibility_agent():
@@ -76,7 +76,7 @@ def test_no_ref_resolves_to_the_compatibility_agent():
 
 def test_a_version_mismatch_runs_current_and_says_so():
     """Refusing would break every tenant the moment the provider shipped an update."""
-    resolution = agents.resolve("linux.server_health_check", "0.9.0")
+    resolution = agents.resolve("generic.single_phase", "0.9.0")
 
     assert resolution.spec.version == "1.0.0"
     assert resolution.substituted_from == "0.9.0"
@@ -84,7 +84,7 @@ def test_a_version_mismatch_runs_current_and_says_so():
 
 
 def test_a_matching_version_reports_no_substitution():
-    assert agents.resolve("linux.server_health_check", "1.0.0").note is None
+    assert agents.resolve("generic.single_phase", "1.0.0").note is None
 
 
 def test_a_published_manifest_carries_no_persona_or_prompts():

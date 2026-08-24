@@ -594,6 +594,10 @@ def respond(graph_state: GraphState) -> GraphStateUpdate:
     """
     state, ctx = graph_state["state"], graph_state["ctx"]
     state.visit(Phase.RESPOND)
+    # Set before the model call, not after. A single-phase agent has no triage,
+    # yet a run that parked holding tool calls used to report the state's
+    # default phase — TRIAGE — in the run view, naming a phase it never runs.
+    state.phase = Phase.RESPOND
 
     reply: AIMessage = ctx.bound(Phase.RESPOND).invoke(
         [

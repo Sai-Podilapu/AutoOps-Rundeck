@@ -75,7 +75,14 @@ autoops:
       base-url: ${DIFY_BASE_URL:}
       api-key: ${DIFY_API_KEY:}
       connect-timeout: ${DIFY_CONNECT_TIMEOUT:3s}
+      # Console reads: listing apps, fetching a form. Short on purpose.
       read-timeout: ${DIFY_READ_TIMEOUT:30s}
+      # A WORKFLOW RUN, which is a different kind of call entirely. Dify is
+      # invoked in blocking mode, so this has to outlast the whole workflow —
+      # a research workflow with ten LLM nodes runs for many minutes. It was a
+      # hard-coded 10m Java default with no way to raise it; the first real
+      # workflow ran for 8 of those 10 minutes.
+      run-timeout: ${DIFY_RUN_TIMEOUT:20m}
     subscription:
       base-url: ${SUBSCRIPTION_SERVICE_URL:http://localhost:8082}
       connect-timeout: ${SUBSCRIPTION_CONNECT_TIMEOUT:2s}
@@ -88,9 +95,21 @@ autoops:
       pool-size: ${EXECUTION_POOL_SIZE:4}
       # simulated | remote — remote sends every step to job-service for REAL
       # execution (shell commands, scripts, python, ssh, REST calls).
+      # simulated | remote (job-service) | rundeck (the platform engine).
+      #
+      # `rundeck` is the replacement for `remote`: every step in every project
+      # in every tenant executes on the Rundeck AutoOps runs itself. `remote`
+      # is kept so a deployment can be rolled back to job-service with one
+      # variable and a restart, which is the only honest way to ship an engine
+      # swap.
       mode: ${EXECUTION_MODE:simulated}
       job-service-url: ${JOB_SERVICE_URL:http://localhost:8084}
       job-service-token: ${JOB_INTERNAL_TOKEN:dev-internal-token}
+      # rundeck-service, NOT Rundeck. core-service never speaks to the engine
+      # directly — that hop is what keeps the engine's URL and admin token in
+      # one service no tenant-facing route reaches.
+      rundeck-service-url: ${RUNDECK_SERVICE_URL:http://localhost:8090}
+      rundeck-service-token: ${RUNDECK_INTERNAL_TOKEN:dev-internal-token}
       step-timeout: ${EXECUTION_STEP_TIMEOUT:60s}
       retry-delay: ${EXECUTION_RETRY_DELAY:2s}
       # Simulated executor timing (simulated mode only).

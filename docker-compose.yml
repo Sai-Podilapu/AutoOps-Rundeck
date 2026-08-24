@@ -132,8 +132,9 @@ services:
       DB_PORT: "3306"
       AUTH_JWKS_URI: http://auth-service:8081/oauth2/jwks
       SUBSCRIPTION_SERVICE_URL: http://subscription-service:8082
-      # Real step execution via job-service (simulated when unset).
-      EXECUTION_MODE: remote
+      # Real step execution. `rundeck` = the platform engine (the replacement);
+      # `remote` = job-service (the rollback); unset = simulated.
+      EXECUTION_MODE: ${EXECUTION_MODE:-rundeck}
       JOB_SERVICE_URL: http://job-service:8084
       JOB_INTERNAL_TOKEN: ${JOB_INTERNAL_TOKEN:-dev-internal-token}
       SUBSCRIPTION_INTERNAL_TOKEN: ${SUBSCRIPTION_INTERNAL_TOKEN:-dev-internal-token}
@@ -159,6 +160,13 @@ services:
       # fail no run — the emitter logs and moves on.
       PLUGIN_SERVICE_URL: http://plugin-service:8088
       PLUGIN_INTERNAL_TOKEN: ${PLUGIN_INTERNAL_TOKEN:-dev-internal-token}
+      # THE EXECUTION ENGINE. `rundeck` replaces `remote` (job-service):
+      # every step in every project in every tenant runs on the platform
+      # Rundeck. Set EXECUTION_MODE=remote to roll back to job-service — one
+      # variable and a restart, which is the only honest way to ship an engine
+      # swap.
+      RUNDECK_SERVICE_URL: http://rundeck-service:8090
+      RUNDECK_INTERNAL_TOKEN: ${RUNDECK_INTERNAL_TOKEN:-dev-internal-token}
       CONSOLE_BASE_URL: ${CONSOLE_BASE_URL:-http://localhost:5173}
       # Dify is the workflow engine. Set both in ./.env — until then the
       # bridge answers 503 and the designer says Dify is not connected.
@@ -169,6 +177,9 @@ services:
       # core-service also accepts would need an edit here for every workflow
       # added, which is exactly the friction that stops workflows shipping.
       DIFY_WORKFLOW_KEYS: ${DIFY_WORKFLOW_KEYS:-}
+      # Blocking workflow runs outlast any console read; see application.yml.
+      DIFY_RUN_TIMEOUT: ${DIFY_RUN_TIMEOUT:-20m}
+      DIFY_READ_TIMEOUT: ${DIFY_READ_TIMEOUT:-30s}
       # Shared secret workflow-service and agent-service must present on
       # this service's own /internal/** endpoints.
       CORE_INTERNAL_TOKEN: ${CORE_INTERNAL_TOKEN:-dev-internal-token}
@@ -244,6 +255,10 @@ services:
       # The kill switch. Set false to send every run back to this service's own
       # Java chat adapters — the loop that shipped before agent-runtime existed.
       AGENT_RUNTIME_ENABLED: ${AGENT_RUNTIME_ENABLED:-true}
+      # Must outlast DIFY_RUN_TIMEOUT on core-service.
+      AGENT_TOOL_TIMEOUT: ${AGENT_TOOL_TIMEOUT:-25m}
+      # Must outlast the slowest single reduce, not the slowest tool.
+      AGENT_RUNTIME_READ_TIMEOUT: ${AGENT_RUNTIME_READ_TIMEOUT:-15m}
     ports:
       - "8087:8087"
     depends_on:
@@ -324,6 +339,88 @@ services:
       retries: 12
       start_period: 30s
 
+  # THE EXECUTION ENGINE. Rundeck plus every binary job-service used to
+  # provide — OpenTofu, kubectl, python3+boto3, the AWS CLI — pinned in
+  # backend/rundeck-runtime/Dockerfile.
+  #
+  # NO host port. This is the white-label boundary: nothing outside the compose
+  # network reaches it, no gateway route points at it, and no tenant is ever
+  # told it exists. Publishing 4440 "for debugging" would put the engine's login
+  # page on the operator's laptop and the brand on the customer's screenshot.
+  #
+  # Storage is the stock H2 file database in the container's volume. That is
+  # fine for a single-instance engine and is NOT fine for two — see the service
+  # README's Known gaps before scaling this to a second replica.
+  rundeck:
+    build: ./backend/rundeck-runtime
+    environment:
+      # The URL Rundeck believes it is reachable at. It only ever serves
+      # rundeck-service, so the internal name is the honest value.
+      RUNDECK_GRAILS_URL: http://rundeck:4440
+      RUNDECK_SERVER_FORWARDED: "true"
+      # Bootstraps the admin API token rundeck-service authenticates with, so
+      # the stack comes up runnable without a human clicking through the
+      # Rundeck UI to mint one.
+      RUNDECK_TOKENS_FILE: /home/rundeck/etc/tokens.properties
+      RUNDECK_LOGGING_STRATEGY: CONSOLE
+    volumes:
+      - rundeck-data:/home/rundeck/server/data
+      # Read-only: the engine reads this at boot and must never rewrite it.
+      # Ships a DEV token — override the file (or bake your own image) anywhere
+      # that is not a laptop. See the file's own header.
+      - ./backend/rundeck-runtime/tokens.properties:/home/rundeck/etc/tokens.properties:ro
+    healthcheck:
+      # Rundeck is slow to boot (Grails + schema init), hence the long
+      # start_period — a shorter one marks it unhealthy while it is still fine.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4440/api/41/system/info -H \"X-Rundeck-Auth-Token: $${RUNDECK_API_TOKEN:-autoops-platform-token}\" >/dev/null || exit 1"]
+      interval: 15s
+      retries: 20
+      start_period: 120s
+
+  # The adapter in front of the engine (autoops_rundeck). core-service calls it
+  # to run a step; it provisions the tenant's Rundeck project, translates the
+  # step into a script, dispatches, polls and returns the log.
+  #
+  # It has NO /api/** surface and no gateway route — its only caller is
+  # core-service over X-Internal-Token. That is what keeps the engine's URL and
+  # admin token in one service no tenant-facing request can reach.
+  rundeck-service:
+    build: ./backend/rundeck-service
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_NAME: autoops_rundeck
+      AUTH_JWKS_URI: http://auth-service:8081/oauth2/jwks
+      SUBSCRIPTION_SERVICE_URL: http://subscription-service:8082
+      CORE_SERVICE_URL: http://core-service:8083
+      CORE_INTERNAL_TOKEN: ${CORE_INTERNAL_TOKEN:-dev-internal-token}
+      # Shared secret core-service must present to run a step. This one guards
+      # execution for EVERY tenant on the platform — set a real value.
+      RUNDECK_INTERNAL_TOKEN: ${RUNDECK_INTERNAL_TOKEN:-dev-internal-token}
+      # The engine. Internal name, internal token, never exposed.
+      RUNDECK_URL: http://rundeck:4440
+      RUNDECK_API_TOKEN: ${RUNDECK_API_TOKEN:-autoops-platform-token}
+      RUNDECK_API_VERSION: ${RUNDECK_API_VERSION:-41}
+      # Ceiling on one step, mirroring job-service's hard cap. A step that hits
+      # it is ABORTED upstream, never abandoned mid-change.
+      RUNDECK_STEP_TIMEOUT: ${RUNDECK_STEP_TIMEOUT:-10m}
+    ports:
+      - "8090:8090"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+      subscription-service:
+        condition: service_healthy
+      rundeck:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8090/actuator/health"]
+      interval: 10s
+      retries: 12
+      start_period: 30s
+
   # Aegis-01, the landing-page voice agent. Holds the ElevenLabs API key and
   # hands the browser nothing but a 15-minute signed WebSocket URL. Its two
   # endpoints are anonymous (visitors have no account), so it rate-limits them
@@ -353,6 +450,7 @@ services:
       WORKFLOW_SERVICE_URL: http://workflow-service:8086
       AGENT_SERVICE_URL: http://agent-service:8087
       PLUGIN_SERVICE_URL: http://plugin-service:8088
+      RUNDECK_SERVICE_URL: http://rundeck-service:8090
       VOICE_SERVICE_URL: http://voice-agent:8085
       AUTH_JWKS_URI: http://auth-service:8081/oauth2/jwks
       CORS_ALLOWED_ORIGINS: http://localhost:5173,http://localhost:3000
@@ -370,6 +468,8 @@ services:
       agent-service:
         condition: service_healthy
       plugin-service:
+        condition: service_healthy
+      rundeck-service:
         condition: service_healthy
       voice-agent:
         condition: service_healthy
@@ -432,4 +532,5 @@ services:
 
 volumes:
   mysql-data:
+  rundeck-data:
   langfuse-data:

@@ -218,6 +218,12 @@ public class ExecutionEngine {
      * <p>Step counters are set to 1 so a progress bar reads 0/1 then 1/1. The
      * alternative, 0/0, renders as an empty bar for the entire run.
      */
+    /** "2m 59s" reads better in a run log than "179322". */
+    private static String humanDuration(long millis) {
+        long seconds = Math.max(0, millis / 1000);
+        return seconds < 60 ? seconds + "s" : (seconds / 60) + "m " + (seconds % 60) + "s";
+    }
+
     private void executeViaDify(Run run, String slug, StringBuilder logText) {
         Map<String, Object> inputs = readInputs(run.getInputs());
         run.setStepTotal(1);
@@ -228,12 +234,48 @@ public class ExecutionEngine {
             logText.append("    (no inputs)\n");
         }
         try {
-            DifyAppClient.RunOutcome outcome = difyWorkflows.run(slug, inputs, run.getTenantId());
+            // Each node is written to the log AS IT HAPPENS, and the row is
+            // saved with it. That save is the whole point: the run screen polls
+            // this row, so without it a twenty-minute workflow shows a
+            // motionless spinner and an operator reasonably concludes it has
+            // hung. With it they see "Market Research Agent ✓ (2m 59s)" arrive
+            // one line at a time.
+            java.util.concurrent.atomic.AtomicInteger done =
+                    new java.util.concurrent.atomic.AtomicInteger();
+
+            DifyAppClient.RunOutcome outcome = difyWorkflows.run(slug, inputs, run.getTenantId(),
+                    (title, finished, index, elapsedMs, failed) -> {
+                        if (finished) {
+                            logText.append("    ").append(failed ? "✗ " : "✓ ").append(title);
+                            if (elapsedMs != null) {
+                                logText.append(" (").append(humanDuration(elapsedMs)).append(')');
+                            }
+                            logText.append('\n');
+                        } else {
+                            logText.append("    → ").append(title).append(" …\n");
+                        }
+                        int completed = finished ? done.incrementAndGet() : done.get();
+                        // Written straight to the repository rather than through
+                        // the entity in hand: this runs mid-workflow, and the
+                        // in-memory Run is not the row the UI is reading.
+                        runRepository.findById(run.getId()).ifPresent(live -> {
+                            if (!live.getStatus().isTerminal()) {
+                                live.setStepCompleted(completed);
+                                live.setStepTotal(Math.max(live.getStepTotal(), completed + 1));
+                                live.setLog(logText.toString());
+                                runRepository.save(live);
+                            }
+                        });
+                    });
             if (outcome.totalSteps() != null) {
                 logText.append("    Dify ran ").append(outcome.totalSteps()).append(" node(s)\n");
             }
-            if (outcome.outputs() != null && !outcome.outputs().isBlank()) {
-                logText.append("    | ").append(outcome.outputs()).append('\n');
+            // The report itself, as prose — not the raw outputs JSON. Dumping
+            // that object verbatim put escaped HTML and literal newlines on
+            // screen with the answer buried inside it. See DifyOutputs.
+            String readable = DifyOutputs.readable(outcome.outputs());
+            if (readable != null && !readable.isBlank()) {
+                logText.append('\n').append(readable).append('\n');
             }
             // Reload: the row may have been cancelled while Dify was working,
             // and a stale save here would clobber that flag.
@@ -246,9 +288,12 @@ public class ExecutionEngine {
                         + "completion.\n");
                 current.setLog(logText.toString());
             }
+            // The run's OUTPUT is the report, not a sentence about the report.
+            // "Dify reported the workflow succeeded" told a reader nothing the
+            // status badge did not, and it was appended after the report as
+            // though it were part of it.
             finish(current, outcome.success() ? RunStatus.SUCCEEDED : RunStatus.FAILED,
-                    outcome.error(),
-                    outcome.success() ? "Dify reported the workflow succeeded." : null);
+                    outcome.error(), outcome.success() ? readable : null);
         } catch (Exception ex) {
             // A transport or key failure, as opposed to a workflow that ran and
             // failed. Both end the run, but only this one is an AutoOps problem.
@@ -343,6 +388,23 @@ public class ExecutionEngine {
             return steps; // unparseable snapshot: nothing to execute
         }
         Map<String, Object> inputs = readInputs(run.getInputs());
+
+        // Job-level fleet dispatch, applied to every step of the job.
+        //
+        // Read from `nodeDispatch` rather than `nodes` on purpose: a WORKFLOW
+        // definition already uses `nodes` for its step array (see the path
+        // above), so the two would be indistinguishable under one name.
+        JsonNode dispatch = null;
+        try {
+            JsonNode root = objectMapper.readTree(run.getDefinition());
+            JsonNode candidate = root.path("nodeDispatch");
+            if (candidate.path("dispatch").asBoolean(false)) {
+                dispatch = candidate;
+            }
+        } catch (Exception ex) {
+            dispatch = null; // already parsed once above; nothing new to report
+        }
+
         int total = items.size();
         for (int i = 0; i < total; i++) {
             JsonNode item = items.get(i);
@@ -351,9 +413,37 @@ public class ExecutionEngine {
             String type = item.path("type").asText(item.path("id").asText("step"));
             String label = item.path("label").asText(type + " " + (i + 1));
             steps.add(new StepExecutor.RunStep(i, total, type, label,
-                    resolve(item, inputs, label), 0));
+                    withDispatch(resolve(item, inputs, label), dispatch), 0));
         }
         return steps;
+    }
+
+    /**
+     * Folds the job's fleet settings onto a step, so the executor sees one
+     * self-contained node and {@link StepExecutor} keeps its narrow signature.
+     *
+     * <p>A step that already carries its own {@code nodeFilter} wins: the job
+     * setting is the default for the job, not an override of a deliberate
+     * per-step choice.
+     */
+    private JsonNode withDispatch(JsonNode step, JsonNode dispatch) {
+        if (dispatch == null || !(step instanceof ObjectNode object)) {
+            return step;
+        }
+        ObjectNode merged = object.deepCopy();
+        if (!merged.hasNonNull("nodeFilter")) {
+            String filter = dispatch.path("filter").asText("");
+            if (!filter.isBlank()) {
+                merged.put("nodeFilter", filter);
+            }
+        }
+        if (!merged.hasNonNull("nodeThreadcount") && dispatch.hasNonNull("threadcount")) {
+            merged.put("nodeThreadcount", dispatch.path("threadcount").asInt(1));
+        }
+        if (!merged.hasNonNull("nodeKeepgoing") && dispatch.hasNonNull("keepgoing")) {
+            merged.put("nodeKeepgoing", dispatch.path("keepgoing").asBoolean(false));
+        }
+        return merged;
     }
 
     /** Raised when a step still holds a placeholder nothing supplied a value for. */

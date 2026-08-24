@@ -171,7 +171,8 @@ def _compact(state: AgentState, result: ToolResultWire) -> str:
     what breaks the loop — and it is a fact, not a nudge.
     """
     content = result.content or ""
-    limit = settings().error_excerpt_limit
+    # A failure is summarised hard; a success is the deliverable and is kept.
+    limit = settings().error_excerpt_limit if not result.ok else settings().output_limit
 
     if len(content) > limit:
         head = content[: limit // 2].rstrip()

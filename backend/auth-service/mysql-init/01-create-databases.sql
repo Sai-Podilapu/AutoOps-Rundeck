@@ -40,4 +40,10 @@ GRANT ALL PRIVILEGES ON autoops_agent.* TO 'autoops'@'%';
 CREATE DATABASE IF NOT EXISTS autoops_plugin
     CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 GRANT ALL PRIVILEGES ON autoops_plugin.* TO 'autoops'@'%';
+-- Connections to a tenant's OWN Rundeck server, plus the dispatch receipts for
+-- jobs AutoOps told it to run. Jobs, executions and nodes are NOT mirrored here
+-- — they are read live from Rundeck.
+CREATE DATABASE IF NOT EXISTS autoops_rundeck
+    CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+GRANT ALL PRIVILEGES ON autoops_rundeck.* TO 'autoops'@'%';
 FLUSH PRIVILEGES;

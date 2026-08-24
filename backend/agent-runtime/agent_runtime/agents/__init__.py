@@ -25,9 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from agent_runtime.agents.aws import cost_anomaly_investigator, public_exposure_auditor
 from agent_runtime.agents.generic import single_phase
-from agent_runtime.agents.linux import server_health_check
 from agent_runtime.agents.spec import AgentSpec
 
 #: Every agent this build can run. Adding one is an import and a line here —
@@ -36,9 +34,6 @@ from agent_runtime.agents.spec import AgentSpec
 REGISTRY: dict[str, AgentSpec] = {
     spec.ref: spec
     for spec in (
-        public_exposure_auditor.AGENT,
-        cost_anomaly_investigator.AGENT,
-        server_health_check.AGENT,
         single_phase.AGENT,
     )
 }
