@@ -1,0 +1,53 @@
+name: Deploy api-gateway
+
+on:
+  push:
+    branches: [rundeck-integration]
+    paths:
+      - 'backend/api-gateway/**'
+      - 'k8s/api-gateway/**'
+      - '.github/workflows/deploy-api-gateway.yaml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER: auto-ops-eks
+  ECR_REPO: auto-ops/api-gateway
+  NAMESPACE: demo
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::557690608274:role/github-actions
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          TAG: ${{ github.sha }}
+        run: |
+          docker build -t $REGISTRY/$ECR_REPO:$TAG backend/api-gateway
+          docker push $REGISTRY/$ECR_REPO:$TAG
+
+      - name: Deploy
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          TAG: ${{ github.sha }}
+        run: |
+          aws eks update-kubeconfig --name $CLUSTER --region $AWS_REGION
+          kubectl apply -n $NAMESPACE -f k8s/api-gateway/
+          kubectl set image deployment/api-gateway \
+            app=$REGISTRY/$ECR_REPO:$TAG -n $NAMESPACE
+          kubectl rollout status deployment/api-gateway -n $NAMESPACE --timeout=300s
