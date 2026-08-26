@@ -43,6 +43,10 @@ import static org.mockito.Mockito.when;
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class TenantFeaturesServiceTest {
 
+    /** JobService now mirrors jobs onto the engine; this slice has no rundeck-service. */
+    @MockBean
+    private com.intertec.autoops.core.client.RundeckJobClient rundeckJobClient;
+
     private static final String TENANT = "acme-corp-cafe0123";
     private static final String ACTOR = "admin@acme.io";
     private static final String TOKEN = "test-access-token";
@@ -94,6 +98,13 @@ class TenantFeaturesServiceTest {
     private com.intertec.autoops.core.client.AgentClient agentClient;
     @MockBean
     private RunService runService;
+    /**
+     * ProjectService now tells the execution engine when a project is created,
+     * renamed or archived. Mocked rather than wired: these tests are about the
+     * tenant's own data, and the real client would try to reach rundeck-service.
+     */
+    @MockBean
+    private com.intertec.autoops.core.client.RundeckProjectClient rundeckProjectClient;
 
     @TestConfiguration
     static class TestConfig {

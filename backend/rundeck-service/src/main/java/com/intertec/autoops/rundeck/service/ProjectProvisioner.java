@@ -112,6 +112,98 @@ public class ProjectProvisioner {
         return mapping.getRundeckProject();
     }
 
+    /**
+     * Forget that a project was ever provisioned, so the next
+     * {@link #ensureProject} recreates it on the engine.
+     *
+     * <p>Exists because the engine is not ours alone to change. An operator can
+     * delete a project directly in Rundeck's own UI — that happened during
+     * development, and the mapping row went on claiming {@code provisioned=1}
+     * for a project that no longer existed. {@code ensureProject} trusts the
+     * flag and returns early, so every subsequent step failed with "Project
+     * does not exist" and nothing ever repaired it.
+     *
+     * <p>Called from the dispatch path on a 404, not on a timer: drift is rare,
+     * and paying an existence check before every step would tax the common case
+     * to detect the uncommon one.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void markUnprovisioned(String tenantId, Long projectId) {
+        repository.findByTenantIdAndProjectId(tenantId, projectId).ifPresent(mapping -> {
+            mapping.setProvisioned(false);
+            mapping.setUpdatedAt(Instant.now());
+            repository.save(mapping);
+            log.warn("Rundeck project {} is gone from the engine — will re-provision on next use",
+                    mapping.getRundeckProject());
+        });
+    }
+
+    /**
+     * Make the engine's copy of this project's NAME match what the tenant sees
+     * in AutoOps, without touching the identifier the isolation argument rests
+     * on.
+     *
+     * <p>The Rundeck project {@code name} stays {@code autoops-<tenant>-<id>}
+     * forever. It is computed, sanitized and unique-keyed precisely so a
+     * workspace name the customer typed cannot reach an ACL glob or a URL path
+     * segment — renaming it to a display string would hand that back. Rundeck
+     * also cannot rename a project in place, so "matching names" via {@code name}
+     * would mean delete-and-recreate and the loss of all execution history.
+     *
+     * <p>{@code project.label} is the field Rundeck's own UI renders in place of
+     * the name when it is set, which is exactly the requirement, so the display
+     * name lives there and the identifier is left alone.
+     *
+     * <p>Best-effort by design: a label is cosmetic and must never be the reason
+     * a project cannot be created or a step cannot run.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void syncMetadata(String tenantId, Long projectId, String label, String description) {
+        RundeckProject mapping = repository.findByTenantIdAndProjectId(tenantId, projectId)
+                .orElse(null);
+        if (mapping == null || !mapping.isProvisioned()) {
+            return;
+        }
+        try {
+            apiClient.setProjectConfigKey(platform.target(), mapping.getRundeckProject(),
+                    "project.label", label);
+            apiClient.setProjectConfigKey(platform.target(), mapping.getRundeckProject(),
+                    "project.description", description);
+        } catch (RundeckException ex) {
+            log.warn("Could not sync label onto Rundeck project {}: {}",
+                    mapping.getRundeckProject(), ex.getMessage());
+        }
+    }
+
+    /**
+     * Archive: delete the Rundeck project outright, then forget the mapping.
+     *
+     * <p><strong>This destroys the project's execution history</strong> — every
+     * run ever dispatched into it. That is a deliberate product decision, not an
+     * oversight: the Rundeck list is to mirror the tenant's ACTIVE projects
+     * exactly. Since AutoOps offers <em>restore</em> rather than delete, the
+     * mapping row is removed too, so a later restore re-provisions a fresh
+     * project instead of pointing at a name that no longer exists.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void archive(String tenantId, Long projectId) {
+        RundeckProject mapping = repository.findByTenantIdAndProjectId(tenantId, projectId)
+                .orElse(null);
+        if (mapping == null) {
+            return;
+        }
+        if (mapping.isProvisioned()) {
+            // Let this throw. Deleting the mapping while the engine still holds
+            // the project would orphan it permanently: the name is derived, so
+            // the next provision would take the 409 path and silently adopt a
+            // project full of the archived tenant's executions.
+            apiClient.deleteProject(platform.target(), mapping.getRundeckProject());
+        }
+        repository.delete(mapping);
+        log.info("Archived tenant {} project {} — removed Rundeck project {}",
+                tenantId, projectId, mapping.getRundeckProject());
+    }
+
     private RundeckProject create(String tenantId, Long projectId) {
         RundeckProject mapping = new RundeckProject();
         mapping.setTenantId(tenantId);

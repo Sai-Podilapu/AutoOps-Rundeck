@@ -1,5 +1,6 @@
 package com.intertec.autoops.core.service;
 
+import com.intertec.autoops.core.client.RundeckProjectClient;
 import com.intertec.autoops.core.domain.Project;
 import com.intertec.autoops.core.domain.ProjectStatus;
 import com.intertec.autoops.core.exception.CoreException;
@@ -25,10 +26,13 @@ public class ProjectService {
 
     private final ProjectRepository projectRepository;
     private final SubscriptionGate gate;
+    private final RundeckProjectClient rundeckProjects;
 
-    public ProjectService(ProjectRepository projectRepository, SubscriptionGate gate) {
+    public ProjectService(ProjectRepository projectRepository, SubscriptionGate gate,
+                          RundeckProjectClient rundeckProjects) {
         this.projectRepository = projectRepository;
         this.gate = gate;
+        this.rundeckProjects = rundeckProjects;
     }
 
     @Transactional(readOnly = true)
@@ -58,6 +62,10 @@ public class ProjectService {
         project.setCreatedBy(actor);
         Project saved = projectRepository.save(project);
         log.info("Tenant {} created project {}", tenantId, saved.getId());
+        // EAGER provisioning: the engine gets the project now rather than on the
+        // first step that runs in it, so the two project lists agree from the
+        // moment a tenant creates one. Never throws — see RundeckProjectClient.
+        rundeckProjects.sync(saved);
         return saved;
     }
 
@@ -72,7 +80,12 @@ public class ProjectService {
         if (description != null) {
             project.setDescription(description);
         }
-        return projectRepository.save(project);
+        Project saved = projectRepository.save(project);
+        // A rename only moves the engine's project.label. The Rundeck project
+        // NAME is derived and never changes — see ProjectProvisioner#syncMetadata
+        // for why renaming it would trade the tenant boundary for cosmetics.
+        rundeckProjects.sync(saved);
+        return saved;
     }
 
     /** Archiving frees a MAX_PROJECTS slot; the data survives. */
@@ -81,7 +94,14 @@ public class ProjectService {
         gate.requireActive(accessToken);
         Project project = get(tenantId, id);
         project.setStatus(ProjectStatus.ARCHIVED);
-        return projectRepository.save(project);
+        Project saved = projectRepository.save(project);
+        // NOTE the asymmetry with this method's own contract: the AutoOps data
+        // survives an archive, the engine's does NOT. Archiving DELETES the
+        // Rundeck project and every execution ever run in it, by product
+        // decision, so that the engine lists active projects and nothing else.
+        // A restore below provisions a fresh, empty one.
+        rundeckProjects.archive(saved);
+        return saved;
     }
 
     /** Restoring re-enters the quota — it must pass MAX_PROJECTS again. */
@@ -94,6 +114,10 @@ public class ProjectService {
         long active = projectRepository.countByTenantIdAndStatus(tenantId, ProjectStatus.ACTIVE);
         gate.requireQuota(accessToken, "MAX_PROJECTS", active, "projects");
         project.setStatus(ProjectStatus.ACTIVE);
-        return projectRepository.save(project);
+        Project saved = projectRepository.save(project);
+        // Re-provisions on the engine. It comes back EMPTY: the archive deleted
+        // the executions, and nothing anywhere still holds them.
+        rundeckProjects.sync(saved);
+        return saved;
     }
 }

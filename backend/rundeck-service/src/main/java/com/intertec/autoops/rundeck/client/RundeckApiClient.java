@@ -200,6 +200,98 @@ public class RundeckApiClient {
     }
 
     /**
+     * Upsert ONE project config key, leaving every other key untouched.
+     *
+     * <p><strong>Deliberately not {@code PUT /project/{p}/config}.</strong> That
+     * endpoint REPLACES the whole config map, and this was measured rather than
+     * assumed: a full PUT carrying only a label and description dropped
+     * {@code service.NodeExecutor.default.provider},
+     * {@code service.FileCopier.default.provider},
+     * {@code project.ssh-authentication} and {@code resources.source.1.type}
+     * from a live project — it silently unconfigured how that project executes
+     * anything, and nothing about the 200 response said so.
+     *
+     * <p>The body repeats the key alongside the value. The single-key endpoint
+     * rejects a bare <code>{"&lt;key&gt;":"&lt;value&gt;"}</code> with
+     * "value was not specified", which reads like a malformed request rather
+     * than the wrong body shape it actually is.
+     */
+    public void setProjectConfigKey(Target target, String project, String key, String value) {
+        exchange(target, "PUT",
+                expand(uri(target, "/project/{project}/config/{key}"), project, key),
+                Map.of("key", key, "value", value == null ? "" : value), MAP);
+    }
+
+    /**
+     * Import (or update) a saved job definition.
+     *
+     * <p>This is what makes an AutoOps job a REAL Rundeck job — visible on the
+     * engine's JOBS screen, schedulable by its scheduler, runnable by UUID.
+     *
+     * <p>Three things about this endpoint are easy to get wrong and were each
+     * found the hard way:
+     * <ul>
+     *   <li>the payload is a <b>LIST</b> of jobs even for one job; a bare object
+     *       is rejected with "Expected list data";
+     *   <li>JSON import requires <b>API version 44 or newer</b> — below that the
+     *       response is "Minimum supported version: 44", which reads like a
+     *       server problem rather than a client one;
+     *   <li>{@code dupeOption=update} is what makes a re-import an EDIT. The
+     *       default creates a second job, so every save would accumulate
+     *       duplicates on the engine.
+     * </ul>
+     *
+     * <p>Rundeck answers 200 even when the job was rejected — the outcome is in
+     * the body's {@code failed} array, not the status — so the caller must read
+     * it rather than trust the status code.
+     */
+    public Map<String, Object> importJob(Target target, String project, Object jobsPayload) {
+        return exchange(target, "POST",
+                plain(uri(target, "/project/{project}/jobs/import")
+                        .queryParam("format", "json")
+                        .queryParam("dupeOption", "update")
+                        .uriVariables(java.util.Map.of("project", project))),
+                jobsPayload, MAP);
+    }
+
+    /**
+     * Delete a saved job by UUID.
+     *
+     * <p>Absence is success, for the same reason as {@link #deleteProject}: the
+     * desired end state is "not there", and a 404 already satisfies it.
+     */
+    public void deleteJob(Target target, String jobUuid) {
+        try {
+            exchange(target, "DELETE",
+                    expand(uri(target, "/job/{id}"), jobUuid), null, MAP);
+        } catch (RundeckException ex) {
+            if ("rundeck_not_found".equals(ex.getError())) {
+                return;
+            }
+            throw ex;
+        }
+    }
+
+    /**
+     * Delete a Rundeck project, and with it every execution ever run in it.
+     *
+     * <p>Absence is success. A 404 means the desired end state already holds,
+     * and throwing on it would leave an AutoOps archive half-applied — the
+     * mapping row gone on one side, the caller believing it failed.
+     */
+    public void deleteProject(Target target, String project) {
+        try {
+            exchange(target, "DELETE",
+                    expand(uri(target, "/project/{project}"), project), null, MAP);
+        } catch (RundeckException ex) {
+            if ("rundeck_not_found".equals(ex.getError())) {
+                return;
+            }
+            throw ex;
+        }
+    }
+
+    /**
      * Ad-hoc command — one shell command, dispatched across the node filter.
      *
      * <p>Both {@code exec} and {@code command} carry the same value. Rundeck

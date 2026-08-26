@@ -111,6 +111,18 @@ public class RundeckProperties {
         private String projectPrefix = "autoops";
 
         /**
+         * Whether the ENGINE fires imported jobs' schedules.
+         *
+         * <p>Defaults to FALSE, and the default is the safe one. core-service's
+         * {@code JobScheduler} still holds the cron for every job; if the engine
+         * also held it, both would fire and every scheduled run would happen
+         * TWICE. Flipping this on is the second half of a handover whose first
+         * half is core-service standing down — never a change to this line
+         * alone.
+         */
+        private boolean jobSchedulingEnabled = false;
+
+        /**
          * How long a single step may run before AutoOps stops waiting and
          * aborts the Rundeck execution. Mirrors job-service's hard cap: a step
          * that outlives it used to be force-killed with its whole process tree,
@@ -147,6 +159,14 @@ public class RundeckProperties {
 
         public String getProjectPrefix() {
             return projectPrefix;
+        }
+
+        public boolean isJobSchedulingEnabled() {
+            return jobSchedulingEnabled;
+        }
+
+        public void setJobSchedulingEnabled(boolean jobSchedulingEnabled) {
+            this.jobSchedulingEnabled = jobSchedulingEnabled;
         }
 
         public void setProjectPrefix(String projectPrefix) {

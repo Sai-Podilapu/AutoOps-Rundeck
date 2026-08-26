@@ -37,10 +37,14 @@ autoops:
     platform:
       url: ${RUNDECK_URL:http://localhost:4440}
       api-token: ${RUNDECK_API_TOKEN:}
-      api-version: ${RUNDECK_API_VERSION:41}
+      # >= 44 required for JSON job import; 50 is the bundled engine's own.
+      api-version: ${RUNDECK_API_VERSION:50}
       # Prefix on every project this platform creates, so an operator can write
       # one ACL glob over all of them.
       project-prefix: ${RUNDECK_PROJECT_PREFIX:autoops}
+      # FALSE until core-service's JobScheduler stands down. Both schedulers
+      # holding the same cron means every scheduled run fires twice.
+      job-scheduling-enabled: ${RUNDECK_JOB_SCHEDULING:false}
       # Ceiling on ONE step, mirroring job-service's hard cap. A step that hits
       # it is aborted upstream, never abandoned mid-change.
       step-timeout: ${RUNDECK_STEP_TIMEOUT:10m}
@@ -66,7 +70,7 @@ autoops:
       read-timeout: ${RUNDECK_READ_TIMEOUT:20s}
       # Rundeck's API version segment: /api/{version}/... Overridable per
       # connection, because a customer on an older server needs a lower one.
-      default-api-version: ${RUNDECK_API_VERSION:41}
+      default-api-version: ${RUNDECK_API_VERSION:50}
       # Log relay cap per poll. Rundeck will happily return an entire
       # execution log; the console only ever renders a window of it.
       max-log-lines: ${RUNDECK_MAX_LOG_LINES:500}

@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.Map;
 
 /**
  * Runs ONE AutoOps step on the platform Rundeck and waits for it.
@@ -88,10 +89,34 @@ public class StepRunner {
         RundeckDispatch receipt = receipt(request, project);
         Long executionId = null;
         try {
-            var dispatch = apiClient.runScript(target, project, script.body(),
-                    script.interpreter(), null, script.fileExtension(),
-                    request.nodeFilter(), request.nodeThreadcount(),
-                    request.nodeKeepgoing(), null);
+            Map<String, Object> dispatch;
+            try {
+                dispatch = apiClient.runScript(target, project, script.body(),
+                        script.interpreter(), null, script.fileExtension(),
+                        request.nodeFilter(), request.nodeThreadcount(),
+                        request.nodeKeepgoing(), null);
+            } catch (RundeckException missing) {
+                // A 404 on dispatch means the PROJECT is gone from the engine —
+                // deleted by an operator in Rundeck's own UI, which is a thing
+                // that happens now that the engine has human users. The mapping
+                // row still claims it exists, so without this the project is
+                // permanently broken: ensureProject trusts the flag and returns
+                // the same dead name forever.
+                //
+                // Re-provision and dispatch ONCE more. Not a loop: if the second
+                // attempt also 404s, the cause is not stale state and retrying
+                // would only turn a clear failure into a slow one.
+                if (!"rundeck_not_found".equals(missing.getError())) {
+                    throw missing;
+                }
+                provisioner.markUnprovisioned(request.tenantId(), request.projectId());
+                project = provisioner.ensureProject(request.tenantId(), request.projectId());
+                receipt.setRundeckProject(project);
+                dispatch = apiClient.runScript(target, project, script.body(),
+                        script.interpreter(), null, script.fileExtension(),
+                        request.nodeFilter(), request.nodeThreadcount(),
+                        request.nodeKeepgoing(), null);
+            }
 
             ExecutionView execution = mapper.execution(dispatch);
             executionId = execution.id();

@@ -68,6 +68,17 @@ import static org.mockito.Mockito.when;
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class GovernanceServiceTest {
 
+    /** JobService now mirrors jobs onto the engine; this slice has no rundeck-service. */
+    @MockBean
+    private com.intertec.autoops.core.client.RundeckJobClient rundeckJobClient;
+
+    /**
+     * ProjectService now tells the execution engine when a project is created,
+     * renamed or archived. Mocked because this slice has no rundeck-service.
+     */
+    @MockBean
+    private com.intertec.autoops.core.client.RundeckProjectClient rundeckProjectClient;
+
     private static final String TENANT = "acme-corp-cafe0123";
     private static final String ADMIN = "admin@acme.io";
     private static final String TOKEN = "test-access-token";

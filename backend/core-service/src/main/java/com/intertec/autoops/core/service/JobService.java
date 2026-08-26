@@ -2,6 +2,7 @@ package com.intertec.autoops.core.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.intertec.autoops.core.client.RundeckJobClient;
 import com.intertec.autoops.core.domain.Job;
 import com.intertec.autoops.core.domain.Project;
 import com.intertec.autoops.core.exception.CoreException;
@@ -29,15 +30,18 @@ public class JobService {
     private final ProjectRepository projectRepository;
     private final SubscriptionGate gate;
     private final ObjectMapper objectMapper;
+    private final RundeckJobClient rundeckJobs;
 
     public JobService(JobRepository jobRepository,
                       ProjectRepository projectRepository,
                       SubscriptionGate gate,
-                      ObjectMapper objectMapper) {
+                      ObjectMapper objectMapper,
+                      RundeckJobClient rundeckJobs) {
         this.jobRepository = jobRepository;
         this.projectRepository = projectRepository;
         this.gate = gate;
         this.objectMapper = objectMapper;
+        this.rundeckJobs = rundeckJobs;
     }
 
     @Transactional(readOnly = true)
@@ -93,6 +97,10 @@ public class JobService {
         job.setCreatedBy(actor);
         Job saved = jobRepository.save(job);
         log.info("Tenant {} created job {} ({} steps)", tenantId, saved.getId(), saved.getStepCount());
+        // Put it on the engine as a real Rundeck job. Never throws: a job with
+        // no step bodies yet is legitimately unimportable, and refusing to SAVE
+        // a half-written job would make the authoring screen unusable.
+        rundeckJobs.sync(saved);
         return saved;
     }
 
@@ -138,7 +146,11 @@ public class JobService {
         if (requiresApproval != null) {
             job.setRequiresApproval(requiresApproval);
         }
-        return jobRepository.save(job);
+        Job saved = jobRepository.save(job);
+        // Re-import. The engine-side UUID is derived from (tenant, job id), so
+        // this edits the same Rundeck job rather than adding another.
+        rundeckJobs.sync(saved);
+        return saved;
     }
 
     @Transactional
@@ -150,7 +162,11 @@ public class JobService {
             // Recompute so a long-paused job doesn't fire off a stale due time.
             job.setNextRunAt(CronSupport.next(job.getSchedule(), job.getScheduleTimezone()));
         }
-        return jobRepository.save(job);
+        Job saved = jobRepository.save(job);
+        // Carries `enabled` across as executionEnabled, so a job paused in
+        // AutoOps cannot still be run from the engine's own UI.
+        rundeckJobs.sync(saved);
+        return saved;
     }
 
     /** Deleting frees a MAX_JOBS slot. */
@@ -158,6 +174,9 @@ public class JobService {
     public void delete(String tenantId, String accessToken, Long id) {
         gate.requireActive(accessToken);
         Job job = get(tenantId, id);
+        // Before the delete: the client reads the job's id and tenant off the
+        // entity, and after removal there is nothing left to read them from.
+        rundeckJobs.remove(job);
         jobRepository.delete(job);
         log.info("Tenant {} deleted job {}", tenantId, id);
     }

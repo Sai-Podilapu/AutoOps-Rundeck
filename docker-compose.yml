@@ -400,7 +400,12 @@ services:
       # The engine. Internal name, internal token, never exposed.
       RUNDECK_URL: http://rundeck:4440
       RUNDECK_API_TOKEN: ${RUNDECK_API_TOKEN:-autoops-platform-token}
-      RUNDECK_API_VERSION: ${RUNDECK_API_VERSION:-41}
+      # 44 is a FLOOR, not a preference: JSON job import
+      # (/project/{p}/jobs/import?format=json) is rejected below it with
+      # "Minimum supported version: 44", and that endpoint is how an
+      # AutoOps job becomes a real Rundeck job. 50 is what the bundled
+      # engine itself reports.
+      RUNDECK_API_VERSION: ${RUNDECK_API_VERSION:-50}
       # Ceiling on one step, mirroring job-service's hard cap. A step that hits
       # it is ABORTED upstream, never abandoned mid-change.
       RUNDECK_STEP_TIMEOUT: ${RUNDECK_STEP_TIMEOUT:-10m}
