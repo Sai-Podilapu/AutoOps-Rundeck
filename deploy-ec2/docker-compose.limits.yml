@@ -1,0 +1,86 @@
+# ============================================================
+# t3.2xlarge (8 vCPU / 32 GB) memory budget.
+#
+# WHY THIS FILE EXISTS AT ALL: the root compose file sets no mem_limit
+# anywhere, and every Java service's Dockerfile sets
+# JAVA_OPTS="-XX:MaxRAMPercentage=75". Without a cgroup limit a JVM reads the
+# HOST's memory, so ten services each size a heap to ~24 GB on a 32 GB box.
+# They never all claim it at once, which is exactly what makes it dangerous:
+# GC stays lazy, RSS creeps, and the box OOM-kills a service an hour into the
+# demo rather than failing at boot where you'd see it.
+#
+# MaxRAMPercentage respects the cgroup limit, so mem_limit here caps each heap
+# at 75% of the number below. No Dockerfile change needed.
+#
+# Budget (32 GB total):
+#   10 JVM services   ~10.9 GB
+#   rundeck (Grails)    3.0 GB
+#   mysql               3.0 GB
+#   agent-runtime       1.0 GB
+#   redis + frontend    0.3 GB
+#   -------------------------
+#   containers        ~18.2 GB   leaving ~13 GB for the OS, page cache and
+#                                the Maven JVMs during the build
+#
+# .env's COMPOSE_FILE names this file, so it loads automatically — and compose
+# fails hard if a named file is missing, which is why it must exist.
+# ============================================================
+name: autoops
+
+services:
+  mysql:
+    mem_limit: 3g
+    # The official entrypoint prepends `mysqld` to any arg starting with `-`,
+    # so this is appended to the server command rather than replacing it.
+    # 1G buffer pool: seven schemas, and the demo's run history is the hot set.
+    command: --innodb-buffer-pool-size=1G
+
+  redis:
+    mem_limit: 256m
+
+  # ---------- JVM services ----------
+  # core-service carries the run engine, the cron scheduler pool and the
+  # compliance report builder — PDF generation is the memory spike.
+  core-service:
+    mem_limit: 2g
+
+  agent-service:
+    mem_limit: 1536m
+
+  auth-service:
+    mem_limit: 1g
+
+  subscription-service:
+    mem_limit: 1g
+
+  workflow-service:
+    mem_limit: 1g
+
+  plugin-service:
+    mem_limit: 1g
+
+  rundeck-service:
+    mem_limit: 1g
+
+  api-gateway:
+    mem_limit: 1g
+
+  # Kept only because core-service declares a hard `depends_on: service_healthy`
+  # on it. EXECUTION_MODE=rundeck means it runs no steps, so it just idles.
+  job-service:
+    mem_limit: 768m
+
+  voice-agent:
+    mem_limit: 640m
+
+  # ---------- non-JVM ----------
+  agent-runtime:
+    mem_limit: 1g
+
+  # Grails plus a full H2 schema init. The one service that will fail to boot if
+  # squeezed; its healthcheck already allows 120s + 20x15s for exactly that.
+  rundeck:
+    mem_limit: 3g
+
+  frontend:
+    mem_limit: 64m
